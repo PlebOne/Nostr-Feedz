@@ -9,13 +9,18 @@ const inter = Inter({ subsets: ['latin'] })
 export const metadata = {
   title: 'Nostr Feedz',
   description: 'A decentralized social feed powered by Nostr',
-  viewport: 'width=device-width, initial-scale=1, maximum-scale=5',
-  themeColor: '#3B82F6',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'default',
     title: 'Nostr Feedz',
   },
+}
+
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 5,
+  themeColor: '#3B82F6',
 }
 
 export default function RootLayout({

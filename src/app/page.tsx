@@ -4,6 +4,7 @@ import { AuthShowcase } from '@/components/auth-showcase'
 import { useNostrAuth } from '@/contexts/NostrAuthContext'
 import { useRouter } from 'next/navigation'
 import { useEffect } from 'react'
+import Link from 'next/link'
 
 export default function HomePage() {
   const { isConnected } = useNostrAuth()
@@ -24,6 +25,11 @@ export default function HomePage() {
         <p className="text-2xl text-white">
           Your RSS + Nostr Feed Reader
         </p>
+        <div className="bg-purple-600/20 border border-purple-400/50 rounded-lg px-6 py-3 backdrop-blur-sm">
+          <p className="text-white text-lg">
+            <span className="font-bold">7-day free trial</span> · Then $1.50/month
+          </p>
+        </div>
         <div className="max-w-2xl text-center">
           <p className="text-lg text-gray-300 mb-8">
             Subscribe to RSS feeds and Nostr long-form content (NIP-23) in one unified reader. 
@@ -45,6 +51,47 @@ export default function HomePage() {
           </div>
         </div>
         <AuthShowcase />
+        
+        {/* Guide Section - More Prominent */}
+        <div className="mt-8 max-w-3xl w-full">
+          <div className="bg-gradient-to-r from-purple-500/20 to-pink-500/20 rounded-lg p-8 border-2 border-purple-400/50 backdrop-blur-sm">
+            <div className="text-center mb-4">
+              <h2 className="text-3xl font-bold text-white mb-3">
+                🌟 Discover the Nostr Feedz Guide
+              </h2>
+              <p className="text-lg text-gray-200 mb-6">
+                Explore a curated directory of long-form content creators on Nostr. Find writers, bloggers, and thinkers publishing decentralized content.
+              </p>
+            </div>
+            
+            <div className="grid md:grid-cols-3 gap-4 mb-6 text-sm">
+              <div className="text-center">
+                <div className="text-2xl mb-2">🔍</div>
+                <p className="text-gray-300">Browse by topic tags</p>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl mb-2">📖</div>
+                <p className="text-gray-300">Get RSS feeds for any creator</p>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl mb-2">⚡</div>
+                <p className="text-gray-300">Subscribe instantly in-app</p>
+              </div>
+            </div>
+            
+            <div className="text-center">
+              <Link 
+                href="/guide" 
+                className="inline-block bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-8 rounded-lg text-lg transition-colors shadow-lg hover:shadow-xl"
+              >
+                Explore the Guide
+              </Link>
+              <p className="text-sm text-gray-300 mt-3">
+                Submit your own feed and help grow the Nostr ecosystem
+              </p>
+            </div>
+          </div>
+        </div>
       </div>
     </main>
   )

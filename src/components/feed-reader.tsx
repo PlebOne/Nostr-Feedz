@@ -3,6 +3,7 @@
 import { useNostrAuth } from '@/contexts/NostrAuthContext'
 import { useTheme } from '@/contexts/ThemeContext'
 import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { api } from '@/trpc/react'
 import { AddFeedModal } from './add-feed-modal'
 import { SettingsDialog } from './settings-dialog'
@@ -32,6 +33,7 @@ interface FeedItem {
 export function FeedReader() {
   const { user, disconnect } = useNostrAuth()
   const { theme, toggleTheme } = useTheme()
+  const router = useRouter()
   const [selectedFeed, setSelectedFeed] = useState<string | null>('all')
   const [selectedItem, setSelectedItem] = useState<string | null>(null)
   const [showAddFeed, setShowAddFeed] = useState(false)
@@ -50,6 +52,12 @@ export function FeedReader() {
   // Mobile responsive state
   const [showSidebar, setShowSidebar] = useState(false)
   const [mobileView, setMobileView] = useState<'list' | 'content'>('list')
+
+  // Sign out handler
+  const handleSignOut = () => {
+    disconnect()
+    router.push('/')
+  }
 
   // Debug: Log session info
   useEffect(() => {
@@ -663,7 +671,7 @@ export function FeedReader() {
         {/* Footer */}
         <div className="p-4 border-t border-slate-200 dark:border-slate-700 flex-shrink-0">{/* flex-shrink-0 keeps footer fixed */}
           <button
-            onClick={disconnect}
+            onClick={handleSignOut}
             className="text-sm text-slate-600 dark:text-slate-300 hover:text-slate-800 dark:hover:text-slate-100"
           >
             Sign Out

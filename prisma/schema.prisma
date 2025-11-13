@@ -88,6 +88,52 @@ model NostrRelay {
     updatedAt DateTime @updatedAt
 }
 
+// Guide Directory - Public catalog of Nostr feeds
+model GuideFeed {
+    id                String   @id @default(cuid())
+    npub              String   @unique
+    displayName       String   // Author's display name
+    about             String?  @db.Text // Author's bio
+    picture           String?  // Profile picture URL
+    tags              String[] @default([]) // Topic tags for categorization
+    submittedBy       String?  // Nostr pubkey of who submitted it
+    lastPublishedAt   DateTime? // Date of most recent post
+    postCount         Int      @default(0) // Number of long-form posts
+    subscriberCount   Int      @default(0) // How many people subscribed via guide
+    isActive          Boolean  @default(true)
+    createdAt         DateTime @default(now())
+    updatedAt         DateTime @updatedAt
+    
+    @@index([tags])
+    @@index([lastPublishedAt])
+    @@index([subscriberCount])
+}
+
+// User Subscriptions - Track paid subscriptions for feed reader access
+model UserSubscription {
+    id                String   @id @default(cuid())
+    userPubkey        String   @unique // Nostr pubkey
+    status            SubscriptionStatus @default(TRIAL)
+    trialEndsAt       DateTime // When the 7-day trial ends
+    subscriptionEndsAt DateTime? // When current paid period ends (null if trial/cancelled)
+    squareCustomerId  String?  // Square customer ID
+    squareSubscriptionId String? // Square subscription ID
+    cancelledAt       DateTime? // When user cancelled (still valid until subscriptionEndsAt)
+    createdAt         DateTime @default(now())
+    updatedAt         DateTime @updatedAt
+    
+    @@index([userPubkey])
+    @@index([status])
+}
+
+enum SubscriptionStatus {
+    TRIAL           // In 7-day free trial
+    ACTIVE          // Paid and active
+    PAST_DUE        // Payment failed, grace period
+    CANCELLED       // User cancelled, still valid until end date
+    EXPIRED         // Trial or subscription expired
+}
+
 enum FeedType {
     RSS
     NOSTR

@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import Link from 'next/link'
 import { api } from '@/trpc/react'
 
 interface NostrProfile {
@@ -234,12 +235,25 @@ export function AddFeedModal({ isOpen, onClose, onAddFeed, isLoading = false, er
           {/* Nostr Profile Search */}
           {feedType === 'NOSTR' && (
             <div className="space-y-4">
+              <div className="text-center p-3 bg-slate-100 dark:bg-slate-700/50 rounded-lg">
+                <p className="text-sm text-slate-600 dark:text-slate-300">
+                  Looking for new content creators?{' '}
+                  <Link
+                    href="/guide"
+                    onClick={handleClose}
+                    className="font-semibold text-blue-600 hover:underline dark:text-blue-400"
+                  >
+                    Check out the Nostr Feedz Guide
+                  </Link>
+                  {' '}to generate RSS feeds from any npub.
+                </p>
+              </div>
               {!showManualInput ? (
                 <>
                   {/* Search Input */}
                   <div>
                     <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                      Search for User
+                      Search for User to Subscribe
                     </label>
                     <input
                       type="text"

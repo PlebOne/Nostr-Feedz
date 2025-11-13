@@ -10,6 +10,7 @@
     "postinstall": "prisma generate"
   },
   "dependencies": {
+    "@clerk/nextjs": "^6.35.1",
     "@prisma/client": "^5.8.1",
     "@t3-oss/env-nextjs": "^0.7.1",
     "@tanstack/react-query": "^4.36.1",
@@ -21,13 +22,14 @@
     "cheerio": "^1.1.2",
     "next": "^16.0.2",
     "next-pwa": "^5.6.0",
-    "nostr-tools": "^2.1.4",
+    "nostr-tools": "^2.17.2",
     "react": "^18",
     "react-dom": "^18",
     "react-markdown": "^10.1.0",
     "rehype-raw": "^7.0.0",
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1",
+    "rss": "^1.2.2",
     "superjson": "^2.2.1",
     "xml2js": "^0.6.2",
     "zod": "^3.22.4"
@@ -38,6 +40,7 @@
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
+    "@types/rss": "^0.0.32",
     "@typescript-eslint/eslint-plugin": "^8.46.4",
     "@typescript-eslint/parser": "^8.46.4",
     "autoprefixer": "^10.0.1",

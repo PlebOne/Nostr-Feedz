@@ -43,3 +43,6 @@ next-env.d.ts
 **/public/sw.js.map
 **/public/workbox-*.js.map
 **/public/worker-*.js.map
+
+# Private documentation (contains sensitive setup info)
+SQUARE_SETUP.md
