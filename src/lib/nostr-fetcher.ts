@@ -115,7 +115,7 @@ export class NostrFeedFetcher {
     return {
       id: event.id,
       title: title || 'Untitled',
-      content: event.content,
+      content: event.content || summary || 'No content available',
       author: nip19.npubEncode(event.pubkey),
       publishedAt: publishedAt || new Date(event.created_at * 1000),
       url: url || undefined,

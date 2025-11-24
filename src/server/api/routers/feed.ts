@@ -8,12 +8,41 @@ import { nip19 } from 'nostr-tools'
 
 const NOSTR_VIEWER_BASE_URL = 'https://njump.me'
 
-const buildNostrOriginalUrl = (feedType: FeedType, guid?: string | null) => {
+const buildNostrOriginalUrl = (feedType: FeedType, guid?: string | null, authorNpub?: string | null, dTag?: string | null) => {
   if (!guid) return undefined
   if (feedType !== 'NOSTR' && feedType !== 'NOSTR_VIDEO') return undefined
 
   try {
-    const nevent = nip19.neventEncode({ id: guid })
+    // Decode author npub to hex if available
+    let authorHex: string | undefined
+    if (authorNpub) {
+      try {
+        const decoded = nip19.decode(authorNpub)
+        if (decoded.type === 'npub') {
+          authorHex = decoded.data
+        }
+      } catch (e) {
+        // Ignore invalid npub
+      }
+    }
+
+    // For NIP-23 long-form articles (NOSTR type), prefer naddr if we have d-tag and author
+    if (feedType === 'NOSTR' && dTag && authorHex) {
+      const naddr = nip19.naddrEncode({
+        kind: 30023,
+        pubkey: authorHex,
+        identifier: dTag,
+        relays: ['wss://relay.damus.io', 'wss://nos.lol']
+      })
+      return `${NOSTR_VIEWER_BASE_URL}/${naddr}`
+    }
+
+    // Fallback to nevent for videos or if d-tag missing
+    const nevent = nip19.neventEncode({ 
+      id: guid,
+      author: authorHex,
+      relays: ['wss://relay.damus.io', 'wss://nos.lol'] // Reduced relays to avoid timeouts
+    })
     return `${NOSTR_VIEWER_BASE_URL}/${nevent}`
   } catch (error) {
     console.error('Failed to build Nostr original URL', { feedType, guid, error })
@@ -166,7 +195,8 @@ export const feedRouter = createTRPCRouter({
 
       try {
         const mappedItems = items.map(item => {
-          const originalUrl = buildNostrOriginalUrl(item.feed.type, item.guid) ?? item.url ?? undefined
+          // For NOSTR items, item.url holds the d-tag
+          const originalUrl = buildNostrOriginalUrl(item.feed.type, item.guid, item.author, item.url) ?? item.url ?? undefined
 
           return {
             id: item.id,
