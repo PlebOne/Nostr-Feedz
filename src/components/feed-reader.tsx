@@ -446,7 +446,7 @@ export function FeedReader() {
   }
 
   // Handle sharing to Nostr
-  const handleShareToNostr = async (item: FeedItem, originalUrl: string | undefined) => {
+  const handleShareToNostr = async (item: FeedItem, originalUrl: string | null | undefined) => {
     if (!window.nostr) {
       alert('Please install a Nostr browser extension (like Alby or nos2x) to share posts.')
       return
