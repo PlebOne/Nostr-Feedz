@@ -8,6 +8,7 @@ import { api } from '@/trpc/react'
 import { AddFeedModal } from './add-feed-modal'
 import { SettingsDialog, MarkReadBehavior } from './settings-dialog'
 import { FormattedContent } from './formatted-content'
+import { SimplePool } from 'nostr-tools'
 import type { inferRouterOutputs } from '@trpc/server'
 import type { AppRouter } from '@/server/api/root'
 
@@ -64,6 +65,8 @@ export function FeedReader() {
   const [sortOrder, setSortOrder] = useState<'newest' | 'oldest'>('newest')
   const [tagSortOrder, setTagSortOrder] = useState<'alphabetical' | 'unread'>('alphabetical')
   const [markReadBehavior, setMarkReadBehavior] = useState<MarkReadBehavior>('on-open')
+  const [isSharing, setIsSharing] = useState(false)
+  const [shareSuccess, setShareSuccess] = useState(false)
   const markReadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   
   // Mobile responsive state
@@ -439,6 +442,60 @@ export function FeedReader() {
         addFavoriteToCache({ ...sourceItem, isFavorited: true })
       }
       addFavoriteMutation.mutate({ itemId })
+    }
+  }
+
+  // Handle sharing to Nostr
+  const handleShareToNostr = async (item: FeedItem, originalUrl: string | undefined) => {
+    if (!window.nostr) {
+      alert('Please install a Nostr browser extension (like Alby or nos2x) to share posts.')
+      return
+    }
+
+    setIsSharing(true)
+    setShareSuccess(false)
+
+    try {
+      // Build the share URL - for Nostr posts use habla.news, otherwise use original URL
+      const shareUrl = originalUrl || item.url || ''
+      
+      // Create the note content with attribution
+      const noteContent = `📖 ${item.title}\n\n${shareUrl}\n\n— shared from nostrfeedz.com`
+
+      // Create unsigned event (kind 1 = short text note)
+      const unsignedEvent = {
+        kind: 1,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [] as string[][],
+        content: noteContent,
+      }
+
+      // Sign the event using NIP-07
+      const signedEvent = await window.nostr.signEvent(unsignedEvent)
+
+      if (!signedEvent) {
+        throw new Error('Failed to sign event')
+      }
+
+      // Publish to relays
+      const pool = new SimplePool()
+      const relays = [
+        'wss://relay.damus.io',
+        'wss://nos.lol',
+        'wss://relay.nostr.band',
+        'wss://relay.snort.social',
+      ]
+
+      await Promise.any(pool.publish(relays, signedEvent))
+      pool.close(relays)
+
+      setShareSuccess(true)
+      setTimeout(() => setShareSuccess(false), 3000)
+    } catch (error) {
+      console.error('Failed to share to Nostr:', error)
+      alert('Failed to share to Nostr. Please try again.')
+    } finally {
+      setIsSharing(false)
     }
   }
   
@@ -1218,6 +1275,20 @@ export function FeedReader() {
                     className="px-3 py-2 text-sm font-medium rounded-md border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700"
                   >
                     {selectedItemData.isRead ? 'Mark as Unread' : 'Mark as Read'}
+                  </button>
+                  <button
+                    onClick={() => handleShareToNostr(selectedItemData, selectedItemOriginalUrl)}
+                    disabled={isSharing}
+                    className="p-2 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-md transition-colors flex-shrink-0 relative"
+                    title="Share to Nostr"
+                  >
+                    {isSharing ? (
+                      <span className="text-lg animate-spin">⏳</span>
+                    ) : shareSuccess ? (
+                      <span className="text-lg text-green-500">✓</span>
+                    ) : (
+                      <span className="text-lg">📤</span>
+                    )}
                   </button>
                   <button
                     onClick={() => handleToggleFavorite(selectedItemData.id, selectedItemData.isFavorited || false)}
