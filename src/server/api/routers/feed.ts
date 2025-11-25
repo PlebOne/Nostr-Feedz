@@ -6,7 +6,10 @@ import { discoverFeed } from '@/lib/feed-discovery'
 import { FeedType } from '@prisma/client'
 import { nip19 } from 'nostr-tools'
 
-const NOSTR_VIEWER_BASE_URL = 'https://njump.me'
+// Habla.news is a dedicated long-form content viewer that handles naddr links well
+const NOSTR_ARTICLE_VIEWER_URL = 'https://habla.news'
+// Njump.me as fallback for videos and other content
+const NOSTR_EVENT_VIEWER_URL = 'https://njump.me'
 
 const buildNostrOriginalUrl = (feedType: FeedType, guid?: string | null, authorNpub?: string | null, dTag?: string | null) => {
   if (!guid) return undefined
@@ -26,24 +29,23 @@ const buildNostrOriginalUrl = (feedType: FeedType, guid?: string | null, authorN
       }
     }
 
-    // For NIP-23 long-form articles (NOSTR type), prefer naddr if we have d-tag and author
+    // For NIP-23 long-form articles (NOSTR type), use Habla.news with naddr
     if (feedType === 'NOSTR' && dTag && authorHex) {
       const naddr = nip19.naddrEncode({
         kind: 30023,
         pubkey: authorHex,
         identifier: dTag,
-        relays: ['wss://relay.damus.io', 'wss://nos.lol']
       })
-      return `${NOSTR_VIEWER_BASE_URL}/${naddr}`
+      return `${NOSTR_ARTICLE_VIEWER_URL}/a/${naddr}`
     }
 
-    // Fallback to nevent for videos or if d-tag missing
+    // Fallback to njump.me with nevent for videos or if d-tag missing
     const nevent = nip19.neventEncode({ 
       id: guid,
       author: authorHex,
-      relays: ['wss://relay.damus.io', 'wss://nos.lol'] // Reduced relays to avoid timeouts
+      relays: ['wss://relay.damus.io', 'wss://nos.lol']
     })
-    return `${NOSTR_VIEWER_BASE_URL}/${nevent}`
+    return `${NOSTR_EVENT_VIEWER_URL}/${nevent}`
   } catch (error) {
     console.error('Failed to build Nostr original URL', { feedType, guid, error })
     return undefined
