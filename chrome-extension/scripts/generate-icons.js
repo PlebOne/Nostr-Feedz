@@ -46,15 +46,61 @@ function createPNG(size) {
   ihdr.writeUInt32BE(ihdrCrc, 21);
 
   const rawData = Buffer.alloc(size * (1 + size * 4));
+
+  const r = 99, g = 102, b = 241;
+  const padding = Math.floor(size * 0.05);
+  const iconSize = size - padding;
+  const dotRadius = Math.max(2, Math.floor(iconSize * 0.14));
+  const arcThickness = Math.max(2, Math.floor(iconSize * 0.14));
+
+  const centerX = padding + dotRadius;
+  const centerY = size - padding - dotRadius;
+
   for (let y = 0; y < size; y++) {
     const rowStart = y * (1 + size * 4);
     rawData[rowStart] = 0;
     for (let x = 0; x < size; x++) {
       const idx = rowStart + 1 + x * 4;
-      rawData[idx] = 100;
-      rawData[idx + 1] = 100;
-      rawData[idx + 2] = 200;
-      rawData[idx + 3] = 255;
+
+      const dx = x - centerX;
+      const dy = y - centerY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      let draw = false;
+
+      if (dist <= dotRadius) {
+        draw = true;
+      }
+
+      const arc1Inner = iconSize * 0.32;
+      const arc1Outer = arc1Inner + arcThickness;
+      if (dist >= arc1Inner && dist <= arc1Outer && dx >= 0 && dy <= 0) {
+        draw = true;
+      }
+
+      const arc2Inner = iconSize * 0.58;
+      const arc2Outer = arc2Inner + arcThickness;
+      if (dist >= arc2Inner && dist <= arc2Outer && dx >= 0 && dy <= 0) {
+        draw = true;
+      }
+
+      const arc3Inner = iconSize * 0.84;
+      const arc3Outer = arc3Inner + arcThickness;
+      if (dist >= arc3Inner && dist <= arc3Outer && dx >= 0 && dy <= 0) {
+        draw = true;
+      }
+
+      if (draw) {
+        rawData[idx] = r;
+        rawData[idx + 1] = g;
+        rawData[idx + 2] = b;
+        rawData[idx + 3] = 255;
+      } else {
+        rawData[idx] = 0;
+        rawData[idx + 1] = 0;
+        rawData[idx + 2] = 0;
+        rawData[idx + 3] = 0;
+      }
     }
   }
 

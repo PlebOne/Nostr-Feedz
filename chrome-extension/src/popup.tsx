@@ -79,7 +79,24 @@ function App() {
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [view, setView] = useState<'items' | 'feeds'>('items');
+  const [expandedFeeds, setExpandedFeeds] = useState<Set<string>>(new Set());
   const containerRef = useRef<HTMLDivElement>(null);
+
+  const toggleFeedExpanded = (feedId: string) => {
+    setExpandedFeeds(prev => {
+      const next = new Set(prev);
+      if (next.has(feedId)) {
+        next.delete(feedId);
+      } else {
+        next.add(feedId);
+      }
+      return next;
+    });
+  };
+
+  const getItemsForFeed = (feedTitle: string) => {
+    return recentItems.filter(item => item.feedTitle === feedTitle);
+  };
 
   const applyTheme = useCallback((themeMode: ThemeMode) => {
     let isDark = false;
@@ -334,19 +351,58 @@ function App() {
             </div>
           ) : (
             <div className="feed-list">
-              {feeds.map((feed) => (
-                <div key={feed.id} className="feed-item">
-                  <div className="feed-info">
-                    <span className="feed-type">
-                      {feed.type === 'RSS' ? '📰' : feed.type === 'NOSTR_VIDEO' ? '🎬' : '📝'}
-                    </span>
-                    <span className="feed-title">{feed.title}</span>
-                    {feed.unreadCount > 0 && (
-                      <span className="badge">{feed.unreadCount}</span>
+              {feeds.map((feed) => {
+                const isExpanded = expandedFeeds.has(feed.id);
+                const feedItems = getItemsForFeed(feed.title);
+                const displayItems = showUnreadOnly
+                  ? feedItems.filter(item => !item.isRead)
+                  : feedItems;
+                return (
+                  <div key={feed.id} className="feed-folder">
+                    <div
+                      className={`feed-item ${isExpanded ? 'expanded' : ''}`}
+                      onClick={() => toggleFeedExpanded(feed.id)}
+                    >
+                      <span className="feed-chevron">{isExpanded ? '▼' : '▶'}</span>
+                      <span className="feed-type">
+                        {feed.type === 'RSS' ? '📰' : feed.type === 'NOSTR_VIDEO' ? '🎬' : '📝'}
+                      </span>
+                      <span className="feed-title">{feed.title}</span>
+                      {feed.unreadCount > 0 && (
+                        <span className="badge">{feed.unreadCount}</span>
+                      )}
+                    </div>
+                    {isExpanded && (
+                      <div className="feed-items">
+                        {displayItems.length === 0 ? (
+                          <div className="feed-items-empty">No items</div>
+                        ) : (
+                          displayItems.slice(0, 10).map(item => (
+                            <div
+                              key={item.id}
+                              className={`feed-subitem ${item.isRead ? 'read' : ''}`}
+                              onClick={() => handleOpenItem(item)}
+                            >
+                              <span className="subitem-title">{item.title}</span>
+                              <span className="subitem-time">{formatTimeAgo(item.publishedAt)}</span>
+                              {!item.isRead && (
+                                <span
+                                  className="unread-dot"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void handleMarkRead(item.id);
+                                  }}
+                                  title="Mark as read"
+                                />
+                              )}
+                            </div>
+                          ))
+                        )}
+                      </div>
                     )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )
         )}

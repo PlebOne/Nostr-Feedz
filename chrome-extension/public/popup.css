@@ -268,15 +268,32 @@ body {
   background: var(--accent-hover);
 }
 
-.feed-item {
-  padding: 10px 16px;
+.feed-folder {
   border-bottom: 1px solid var(--border-color);
 }
 
-.feed-info {
+.feed-item {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 10px 16px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.feed-item:hover {
+  background: var(--bg-secondary);
+}
+
+.feed-item.expanded {
+  background: var(--bg-secondary);
+}
+
+.feed-chevron {
+  font-size: 8px;
+  color: var(--text-tertiary);
+  width: 12px;
+  flex-shrink: 0;
 }
 
 .feed-type {
@@ -291,6 +308,48 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.feed-items {
+  background: var(--bg-tertiary);
+}
+
+.feed-items-empty {
+  padding: 8px 16px 8px 48px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.feed-subitem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px 8px 48px;
+  cursor: pointer;
+  position: relative;
+  transition: background 0.1s;
+}
+
+.feed-subitem:hover {
+  background: var(--bg-secondary);
+}
+
+.feed-subitem.read {
+  opacity: 0.6;
+}
+
+.subitem-title {
+  flex: 1;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subitem-time {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
 }
 
 .actions {
