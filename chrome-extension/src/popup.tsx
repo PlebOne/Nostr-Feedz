@@ -134,13 +134,25 @@ function App() {
 
   useEffect(() => {
     void loadData();
+  }, [loadData]);
+
+  useEffect(() => {
+    chrome.storage.local.get(['authToken', 'nostrAuth']).then((result) => {
+      const hasAuth = !!result['authToken'] || !!(result['nostrAuth'] as { pubkey?: string } | undefined)?.pubkey;
+      if (hasAuth) {
+        chrome.runtime.sendMessage({ type: 'REFRESH_FEEDS' }).then(() => loadData()).catch(() => {});
+      }
+    });
+  }, [loadData]);
+
+  useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const handleChange = () => {
       if (theme === 'system') applyTheme('system');
     };
     mediaQuery.addEventListener('change', handleChange);
     return () => mediaQuery.removeEventListener('change', handleChange);
-  }, [loadData, applyTheme, theme]);
+  }, [applyTheme, theme]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
