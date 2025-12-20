@@ -654,15 +654,25 @@ async function addFeedToStorage(feedUrl: string, feedTitle: string): Promise<boo
 
     const storage = await getStorageData();
     const baseUrl = sanitizeUrl(storage.settings.webAppUrl);
-    if (storage.authToken && baseUrl) {
+    const hasAuth = storage.authToken || (storage.nostrAuth?.pubkey && storage.nostrAuth.method !== 'none');
+    if (hasAuth && baseUrl) {
       try {
         const url = `${baseUrl}/api/trpc/feed.subscribeFeed`;
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+        if (storage.authToken) {
+          headers['Authorization'] = `Bearer ${storage.authToken}`;
+        } else if (storage.nostrAuth?.pubkey) {
+          headers['x-nostr-pubkey'] = storage.nostrAuth.pubkey;
+          const nostrHeader = await getNostrAuthHeader(url, 'POST', storage.nostrAuth);
+          if (nostrHeader) {
+            headers['Authorization'] = nostrHeader;
+          }
+        }
+
         await fetch(url, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${storage.authToken}`,
-          },
+          headers,
           credentials: 'include',
           body: JSON.stringify({
             json: {

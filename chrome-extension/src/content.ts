@@ -289,22 +289,29 @@ async function addFeedToStorage(feed: DetectedFeed): Promise<void> {
 
 async function syncWithAccount(feed: LocalFeed): Promise<void> {
   try {
-    const result = await chrome.storage.local.get(['authToken', 'settings']);
+    const result = await chrome.storage.local.get(['authToken', 'nostrAuth', 'settings']);
     const authToken = result['authToken'] as string | undefined;
+    const nostrAuth = result['nostrAuth'] as { pubkey?: string } | undefined;
     const settings = result['settings'] as ExtensionSettings | undefined;
 
-    if (!authToken || !settings?.webAppUrl) return;
+    const hasAuth = authToken || nostrAuth?.pubkey;
+    if (!hasAuth || !settings?.webAppUrl) return;
 
     const baseUrl = sanitizeUrl(settings.webAppUrl);
     if (!baseUrl || !feed.url) return;
 
     const url = `${baseUrl}/api/trpc/feed.subscribeFeed`;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    } else if (nostrAuth?.pubkey) {
+      headers['x-nostr-pubkey'] = nostrAuth.pubkey;
+    }
+
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${authToken}`,
-      },
+      headers,
       credentials: 'include',
       body: JSON.stringify({
         json: {
