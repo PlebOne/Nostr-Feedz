@@ -182,6 +182,8 @@ function App() {
 
   const saveSyncSettings = async (settings: SyncSettings) => {
     await chrome.storage.sync.set({ syncSettings: settings });
+    const existingSettings = await chrome.storage.local.get(['settings']);
+    const current = existingSettings['settings'] as ExtensionSettings | undefined;
     await chrome.storage.local.set({
       settings: {
         webAppUrl: settings.webAppUrl,
@@ -189,7 +191,9 @@ function App() {
         notificationsEnabled: settings.notificationsEnabled,
         notifyOnNewItems: settings.notifyOnNewItems,
         maxNotificationsPerRefresh: settings.maxNotificationsPerRefresh,
-        lastSyncTime: null,
+        lastSyncTime: current?.lastSyncTime ?? null,
+        theme: current?.theme ?? 'system',
+        showUnreadOnly: current?.showUnreadOnly ?? false,
       } satisfies ExtensionSettings,
     });
     setSyncSettings(settings);

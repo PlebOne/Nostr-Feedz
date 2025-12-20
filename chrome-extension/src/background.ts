@@ -50,6 +50,8 @@ const defaultSettings: ExtensionSettings = {
   notifyOnNewItems: true,
   maxNotificationsPerRefresh: 3,
   lastSyncTime: null,
+  theme: 'system',
+  showUnreadOnly: false,
 };
 
 interface NotificationData {
@@ -343,6 +345,11 @@ async function refreshFeeds(): Promise<{ newItemCount: number; error?: string }>
     const newSeenIds = [...seenItemIds, ...newItems.map((item) => item.id)];
     const trimmedSeenIds = newSeenIds.slice(-MAX_SEEN_ITEMS);
 
+    const recentItems = items.slice(0, 50).map(item => ({
+      ...item,
+      feedId: '',
+    }));
+
     await saveStorageData({
       feeds,
       seenItemIds: trimmedSeenIds,
@@ -351,6 +358,7 @@ async function refreshFeeds(): Promise<{ newItemCount: number; error?: string }>
         lastSyncTime: new Date().toISOString(),
       },
     });
+    await chrome.storage.local.set({ recentItems });
 
     console.log(`Feed refresh complete. ${newItems.length} new items, ${totalUnread} total unread`);
     return { newItemCount: newItems.length };
@@ -513,6 +521,26 @@ async function handleMessage(
       const storage = await getStorageData();
       const totalUnread = storage.feeds.reduce((sum, feed) => sum + feed.unreadCount, 0);
       return { success: true, data: { unreadCount: totalUnread } };
+    }
+
+    case 'MARK_ITEM_READ': {
+      const itemId = message['itemId'] as string;
+      if (!itemId) {
+        return { success: false, error: 'Missing itemId' };
+      }
+      try {
+        await markItemAsRead(itemId);
+        const result = await chrome.storage.local.get(['recentItems']);
+        const recentItems = (result['recentItems'] as any[] | undefined) ?? [];
+        const updatedItems = recentItems.map(item =>
+          item.id === itemId ? { ...item, isRead: true } : item
+        );
+        await chrome.storage.local.set({ recentItems: updatedItems });
+        return { success: true };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Failed to mark as read';
+        return { success: false, error: errorMessage };
+      }
     }
 
     case 'UPDATE_SETTINGS': {

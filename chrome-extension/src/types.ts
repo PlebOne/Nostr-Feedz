@@ -37,6 +37,8 @@ export interface Category {
   icon: string | null;
 }
 
+export type ThemeMode = 'light' | 'dark' | 'system';
+
 export interface ExtensionSettings {
   webAppUrl: string;
   pollIntervalMinutes: number;
@@ -44,6 +46,8 @@ export interface ExtensionSettings {
   notifyOnNewItems: boolean;
   maxNotificationsPerRefresh: number;
   lastSyncTime: string | null;
+  theme: ThemeMode;
+  showUnreadOnly: boolean;
 }
 
 export type NostrAuthMethod = 'nsec' | 'nip07' | 'none';

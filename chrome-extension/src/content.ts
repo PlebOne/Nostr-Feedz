@@ -331,9 +331,10 @@ async function syncAuthFromWebApp(): Promise<void> {
   }
 
   try {
+    if (!chrome.runtime?.id) return;
+
     const sessionStr = localStorage.getItem('nostr_session');
     if (!sessionStr) {
-      // User logged out - clear extension auth
       await chrome.runtime.sendMessage({ type: 'SYNC_WEB_AUTH', session: null });
       return;
     }
@@ -347,10 +348,9 @@ async function syncAuthFromWebApp(): Promise<void> {
 
     if (session.pubkey) {
       await chrome.runtime.sendMessage({ type: 'SYNC_WEB_AUTH', session });
-      console.log('Nostr Feedz: Synced auth from web app');
     }
-  } catch (err) {
-    console.error('Failed to sync auth from web app:', err);
+  } catch {
+    // Extension context invalidated - ignore silently
   }
 }
 

@@ -1,60 +1,178 @@
-import { StrictMode, useState, useEffect, useCallback } from 'react';
+import { StrictMode, useState, useEffect, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { Feed, ExtensionSettings } from './types';
+import type { Feed, FeedItem, ExtensionSettings, ThemeMode } from './types';
 
 const DEFAULT_WEB_APP_URL = 'https://nostrfeedz.com';
 
-function FeedItem({ feed }: { feed: Feed }) {
-  const typeIcon = feed.type === 'RSS' ? '📰' : feed.type === 'NOSTR_VIDEO' ? '🎬' : '📝';
+interface RecentItem extends FeedItem {
+  feedId: string;
+}
+
+function formatTimeAgo(dateStr: string): string {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 1) return 'now';
+  if (diffMins < 60) return `${diffMins}m`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `${diffHours}h`;
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7) return `${diffDays}d`;
+  return date.toLocaleDateString();
+}
+
+function ItemRow({
+  item,
+  isSelected,
+  onOpen,
+  onMarkRead
+}: {
+  item: RecentItem;
+  isSelected: boolean;
+  onOpen: () => void;
+  onMarkRead: () => void;
+}) {
+  const typeIcon = item.feedType === 'RSS' ? '📰' : item.feedType === 'NOSTR_VIDEO' ? '🎬' : '📝';
+
   return (
-    <div className="feed-item">
-      <div className="feed-info">
-        <span className="feed-type">{typeIcon}</span>
-        <span className="feed-title">{feed.title}</span>
-        {feed.unreadCount > 0 && (
-          <span className="badge">{feed.unreadCount}</span>
-        )}
+    <div
+      className={`item-row ${isSelected ? 'selected' : ''} ${item.isRead ? 'read' : ''}`}
+      onClick={onOpen}
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') onOpen();
+        if (e.key === 'm' || e.key === 'M') onMarkRead();
+      }}
+    >
+      <span className="item-icon">{typeIcon}</span>
+      <div className="item-content">
+        <div className="item-title">{item.title}</div>
+        <div className="item-meta">
+          <span className="item-feed">{item.feedTitle}</span>
+          <span className="item-time">{formatTimeAgo(item.publishedAt)}</span>
+        </div>
       </div>
+      {!item.isRead && (
+        <span
+          className="unread-dot"
+          onClick={(e) => {
+            e.stopPropagation();
+            onMarkRead();
+          }}
+          title="Mark as read"
+        />
+      )}
     </div>
   );
 }
 
 function App() {
   const [feeds, setFeeds] = useState<Feed[]>([]);
+  const [recentItems, setRecentItems] = useState<RecentItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [webAppUrl, setWebAppUrl] = useState(DEFAULT_WEB_APP_URL);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(null);
+  const [theme, setTheme] = useState<ThemeMode>('system');
+  const [showUnreadOnly, setShowUnreadOnly] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState(-1);
+  const [view, setView] = useState<'items' | 'feeds'>('items');
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  const loadFeeds = useCallback(async () => {
+  const applyTheme = useCallback((themeMode: ThemeMode) => {
+    let isDark = false;
+    if (themeMode === 'dark') {
+      isDark = true;
+    } else if (themeMode === 'system') {
+      isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+    document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+  }, []);
+
+  const loadData = useCallback(async () => {
     try {
-      const result = await chrome.storage.local.get(['feeds', 'settings', 'authToken', 'nostrAuth']);
+      const result = await chrome.storage.local.get(['feeds', 'settings', 'authToken', 'nostrAuth', 'recentItems']);
       const feeds = (result['feeds'] as Feed[] | undefined) ?? [];
       const settings = result['settings'] as ExtensionSettings | undefined;
       const authToken = result['authToken'] as string | undefined;
       const nostrAuth = result['nostrAuth'] as { pubkey?: string } | undefined;
+      const items = (result['recentItems'] as RecentItem[] | undefined) ?? [];
 
       setFeeds(feeds);
+      setRecentItems(items);
       setWebAppUrl(settings?.webAppUrl ?? DEFAULT_WEB_APP_URL);
       setIsAuthenticated(!!authToken || !!nostrAuth?.pubkey);
       setLastSync(settings?.lastSyncTime ?? null);
+      setTheme(settings?.theme ?? 'system');
+      setShowUnreadOnly(settings?.showUnreadOnly ?? false);
+      applyTheme(settings?.theme ?? 'system');
     } catch (err) {
-      console.error('Failed to load feeds:', err);
+      console.error('Failed to load data:', err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [applyTheme]);
 
   useEffect(() => {
-    void loadFeeds();
-  }, [loadFeeds]);
+    void loadData();
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleChange = () => {
+      if (theme === 'system') applyTheme('system');
+    };
+    mediaQuery.addEventListener('change', handleChange);
+    return () => mediaQuery.removeEventListener('change', handleChange);
+  }, [loadData, applyTheme, theme]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const items = displayedItems;
+      if (!items.length) return;
+
+      switch (e.key) {
+        case 'j':
+        case 'ArrowDown':
+          e.preventDefault();
+          setSelectedIndex(prev => Math.min(prev + 1, items.length - 1));
+          break;
+        case 'k':
+        case 'ArrowUp':
+          e.preventDefault();
+          setSelectedIndex(prev => Math.max(prev - 1, 0));
+          break;
+        case 'Enter':
+        case 'o':
+          if (selectedIndex >= 0 && selectedIndex < items.length) {
+            handleOpenItem(items[selectedIndex]!);
+          }
+          break;
+        case 'm':
+          if (selectedIndex >= 0 && selectedIndex < items.length) {
+            void handleMarkRead(items[selectedIndex]!.id);
+          }
+          break;
+        case 'r':
+          void handleRefresh();
+          break;
+        case 'u':
+          handleToggleFilter();
+          break;
+        case 't':
+          handleCycleTheme();
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  });
 
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
       await chrome.runtime.sendMessage({ type: 'REFRESH_FEEDS' });
-      await loadFeeds();
+      await loadData();
     } catch (err) {
       console.error('Failed to refresh:', err);
     } finally {
@@ -67,7 +185,56 @@ function App() {
     void chrome.tabs.create({ url: readerUrl });
   };
 
+  const handleOpenItem = (item: RecentItem) => {
+    const url = item.originalUrl || item.url;
+    if (url) {
+      void chrome.tabs.create({ url });
+      void handleMarkRead(item.id);
+    }
+  };
+
+  const handleMarkRead = async (itemId: string) => {
+    try {
+      await chrome.runtime.sendMessage({ type: 'MARK_ITEM_READ', itemId });
+      setRecentItems(prev => prev.map(item =>
+        item.id === itemId ? { ...item, isRead: true } : item
+      ));
+    } catch (err) {
+      console.error('Failed to mark as read:', err);
+    }
+  };
+
+  const handleToggleFilter = async () => {
+    const newValue = !showUnreadOnly;
+    setShowUnreadOnly(newValue);
+    try {
+      const result = await chrome.storage.local.get(['settings']);
+      const settings = (result['settings'] as ExtensionSettings | undefined) ?? {} as ExtensionSettings;
+      await chrome.storage.local.set({ settings: { ...settings, showUnreadOnly: newValue } });
+    } catch (err) {
+      console.error('Failed to save filter:', err);
+    }
+  };
+
+  const handleCycleTheme = async () => {
+    const themes: ThemeMode[] = ['light', 'dark', 'system'];
+    const currentIndex = themes.indexOf(theme);
+    const newTheme = themes[(currentIndex + 1) % themes.length]!;
+    setTheme(newTheme);
+    applyTheme(newTheme);
+    try {
+      const result = await chrome.storage.local.get(['settings']);
+      const settings = (result['settings'] as ExtensionSettings | undefined) ?? {} as ExtensionSettings;
+      await chrome.storage.local.set({ settings: { ...settings, theme: newTheme } });
+    } catch (err) {
+      console.error('Failed to save theme:', err);
+    }
+  };
+
   const totalUnread = feeds.reduce((sum, feed) => sum + feed.unreadCount, 0);
+  const displayedItems = showUnreadOnly
+    ? recentItems.filter(item => !item.isRead)
+    : recentItems;
 
   const formatLastSync = (timestamp: string | null): string => {
     if (!timestamp) return 'Never';
@@ -75,7 +242,6 @@ function App() {
     const now = new Date();
     const diffMs = now.getTime() - date.getTime();
     const diffMins = Math.floor(diffMs / 60000);
-
     if (diffMins < 1) return 'Just now';
     if (diffMins < 60) return `${diffMins}m ago`;
     const diffHours = Math.floor(diffMins / 60);
@@ -83,15 +249,26 @@ function App() {
     return date.toLocaleDateString();
   };
 
+  const themeIcon = theme === 'light' ? '☀️' : theme === 'dark' ? '🌙' : '🖥️';
+
   if (loading) {
     return <div className="container"><div className="loading">Loading...</div></div>;
   }
 
   return (
-    <div className="container">
+    <div className="container" ref={containerRef}>
       <header className="header">
         <h1>Nostr Feedz</h1>
         {totalUnread > 0 && <span className="badge total-badge">{totalUnread}</span>}
+        <div className="header-actions">
+          <button
+            className="icon-btn"
+            onClick={handleCycleTheme}
+            title={`Theme: ${theme}`}
+          >
+            {themeIcon}
+          </button>
+        </div>
       </header>
 
       {!isAuthenticated && (
@@ -100,38 +277,98 @@ function App() {
         </div>
       )}
 
+      <div className="toolbar">
+        <div className="view-tabs">
+          <button
+            className={`tab ${view === 'items' ? 'active' : ''}`}
+            onClick={() => setView('items')}
+          >
+            Recent
+          </button>
+          <button
+            className={`tab ${view === 'feeds' ? 'active' : ''}`}
+            onClick={() => setView('feeds')}
+          >
+            Feeds
+          </button>
+        </div>
+        <button
+          className={`filter-btn ${showUnreadOnly ? 'active' : ''}`}
+          onClick={handleToggleFilter}
+          title="Toggle unread only (u)"
+        >
+          {showUnreadOnly ? '●' : '○'} Unread
+        </button>
+      </div>
+
+      <div className="content-area">
+        {!isAuthenticated ? (
+          <div className="empty-state">
+            <p>Not signed in</p>
+            <p className="hint">Open the app to sign in with Nostr</p>
+          </div>
+        ) : view === 'items' ? (
+          displayedItems.length === 0 ? (
+            <div className="empty-state">
+              <p>{showUnreadOnly ? 'All caught up!' : 'No recent items'}</p>
+              <p className="hint">New items will appear here</p>
+            </div>
+          ) : (
+            <div className="item-list">
+              {displayedItems.slice(0, 15).map((item, index) => (
+                <ItemRow
+                  key={item.id}
+                  item={item}
+                  isSelected={selectedIndex === index}
+                  onOpen={() => handleOpenItem(item)}
+                  onMarkRead={() => void handleMarkRead(item.id)}
+                />
+              ))}
+            </div>
+          )
+        ) : (
+          feeds.length === 0 ? (
+            <div className="empty-state">
+              <p>No feeds subscribed</p>
+              <p className="hint">Open the app to add feeds</p>
+            </div>
+          ) : (
+            <div className="feed-list">
+              {feeds.map((feed) => (
+                <div key={feed.id} className="feed-item">
+                  <div className="feed-info">
+                    <span className="feed-type">
+                      {feed.type === 'RSS' ? '📰' : feed.type === 'NOSTR_VIDEO' ? '🎬' : '📝'}
+                    </span>
+                    <span className="feed-title">{feed.title}</span>
+                    {feed.unreadCount > 0 && (
+                      <span className="badge">{feed.unreadCount}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
+        )}
+      </div>
+
       <div className="actions">
         <button
           className="btn btn-secondary"
           onClick={() => void handleRefresh()}
           disabled={refreshing || !isAuthenticated}
         >
-          {refreshing ? 'Refreshing...' : 'Refresh'}
+          {refreshing ? 'Syncing...' : 'Sync'}
         </button>
         <button className="btn btn-primary" onClick={handleOpenApp}>
           Open App
         </button>
       </div>
 
-      <div className="feed-list">
-        {!isAuthenticated ? (
-          <div className="empty-state">
-            <p>Not signed in</p>
-            <p className="hint">Open the app to sign in with Nostr</p>
-          </div>
-        ) : feeds.length === 0 ? (
-          <div className="empty-state">
-            <p>No feeds subscribed</p>
-            <p className="hint">Open the app to add feeds</p>
-          </div>
-        ) : (
-          feeds.map((feed) => <FeedItem key={feed.id} feed={feed} />)
-        )}
-      </div>
-
       {isAuthenticated && (
         <footer className="footer">
-          <span className="sync-status">Last sync: {formatLastSync(lastSync)}</span>
+          <span className="sync-status">Synced: {formatLastSync(lastSync)}</span>
+          <span className="shortcuts-hint">j/k nav · o open · m read</span>
         </footer>
       )}
     </div>
