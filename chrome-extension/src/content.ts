@@ -323,8 +323,60 @@ async function syncWithAccount(feed: LocalFeed): Promise<void> {
   }
 }
 
+// Check if we're on nostrfeedz.com and sync auth with extension
+async function syncAuthFromWebApp(): Promise<void> {
+  const hostname = window.location.hostname;
+  if (!hostname.includes('nostrfeedz.com') && !hostname.includes('localhost')) {
+    return;
+  }
+
+  try {
+    const sessionStr = localStorage.getItem('nostr_session');
+    if (!sessionStr) {
+      // User logged out - clear extension auth
+      await chrome.runtime.sendMessage({ type: 'SYNC_WEB_AUTH', session: null });
+      return;
+    }
+
+    const session = JSON.parse(sessionStr) as {
+      pubkey: string;
+      npub: string;
+      method: string;
+      timestamp: number;
+    };
+
+    if (session.pubkey) {
+      await chrome.runtime.sendMessage({ type: 'SYNC_WEB_AUTH', session });
+      console.log('Nostr Feedz: Synced auth from web app');
+    }
+  } catch (err) {
+    console.error('Failed to sync auth from web app:', err);
+  }
+}
+
+// Watch for auth changes in localStorage
+function watchAuthChanges(): void {
+  const hostname = window.location.hostname;
+  if (!hostname.includes('nostrfeedz.com') && !hostname.includes('localhost')) {
+    return;
+  }
+
+  window.addEventListener('storage', (event) => {
+    if (event.key === 'nostr_session') {
+      void syncAuthFromWebApp();
+    }
+  });
+
+  // Also check periodically for same-tab changes
+  setInterval(() => void syncAuthFromWebApp(), 5000);
+}
+
 function init(): void {
   if (document.getElementById(CONTAINER_ID)) return;
+
+  // Sync auth from web app if on nostrfeedz.com
+  void syncAuthFromWebApp();
+  watchAuthChanges();
 
   const feeds = detectFeeds();
 

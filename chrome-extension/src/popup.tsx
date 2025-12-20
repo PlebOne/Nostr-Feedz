@@ -2,7 +2,7 @@ import { StrictMode, useState, useEffect, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Feed, ExtensionSettings } from './types';
 
-const DEFAULT_WEB_APP_URL = 'https://nostr-feedz.vercel.app';
+const DEFAULT_WEB_APP_URL = 'https://nostrfeedz.com';
 
 function FeedItem({ feed }: { feed: Feed }) {
   const typeIcon = feed.type === 'RSS' ? '📰' : feed.type === 'NOSTR_VIDEO' ? '🎬' : '📝';
@@ -29,14 +29,15 @@ function App() {
 
   const loadFeeds = useCallback(async () => {
     try {
-      const result = await chrome.storage.local.get(['feeds', 'settings', 'authToken']);
+      const result = await chrome.storage.local.get(['feeds', 'settings', 'authToken', 'nostrAuth']);
       const feeds = (result['feeds'] as Feed[] | undefined) ?? [];
       const settings = result['settings'] as ExtensionSettings | undefined;
       const authToken = result['authToken'] as string | undefined;
+      const nostrAuth = result['nostrAuth'] as { pubkey?: string } | undefined;
 
       setFeeds(feeds);
       setWebAppUrl(settings?.webAppUrl ?? DEFAULT_WEB_APP_URL);
-      setIsAuthenticated(!!authToken);
+      setIsAuthenticated(!!authToken || !!nostrAuth?.pubkey);
       setLastSync(settings?.lastSyncTime ?? null);
     } catch (err) {
       console.error('Failed to load feeds:', err);
@@ -62,7 +63,8 @@ function App() {
   };
 
   const handleOpenApp = () => {
-    void chrome.tabs.create({ url: webAppUrl });
+    const readerUrl = webAppUrl.replace(/\/$/, '') + '/reader';
+    void chrome.tabs.create({ url: readerUrl });
   };
 
   const totalUnread = feeds.reduce((sum, feed) => sum + feed.unreadCount, 0);

@@ -4,7 +4,7 @@ import type { LocalFeed, SyncSettings, ExtensionSettings, Feed, NostrAuthData } 
 import { isValidNsec } from './nostr';
 
 const DEFAULT_SYNC_SETTINGS: SyncSettings = {
-  webAppUrl: 'https://nostr-feedz.vercel.app',
+  webAppUrl: 'https://nostrfeedz.com',
   pollIntervalMinutes: 5,
   notificationsEnabled: true,
   notifyOnNewItems: true,
@@ -629,7 +629,7 @@ function App() {
             type="url"
             value={syncSettings.webAppUrl}
             onChange={(e) => void handleSettingChange('webAppUrl', e.target.value)}
-            placeholder="https://nostr-feedz.vercel.app"
+            placeholder="https://nostrfeedz.com"
           />
           <p className="form-hint">URL of your Nostr Feedz instance (for self-hosted)</p>
         </div>

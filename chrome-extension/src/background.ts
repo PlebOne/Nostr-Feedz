@@ -19,7 +19,7 @@ import {
 const ALARM_NAME = 'refresh-feeds';
 const DEFAULT_POLL_INTERVAL = 5;
 const MAX_SEEN_ITEMS = 1000;
-const DEFAULT_WEB_APP_URL = 'https://nostr-feedz.vercel.app';
+const DEFAULT_WEB_APP_URL = 'https://nostrfeedz.com';
 
 const ALLOWED_PROTOCOLS = ['https:', 'http:'];
 
@@ -108,7 +108,9 @@ async function fetchWithAuth<T>(
 
   if (authToken) {
     headers['Authorization'] = `Bearer ${authToken}`;
-  } else if (nostrAuth) {
+  } else if (nostrAuth && nostrAuth.pubkey) {
+    // Server expects x-nostr-pubkey header for authentication
+    headers['x-nostr-pubkey'] = nostrAuth.pubkey;
     const nostrHeader = await getNostrAuthHeader(url, options.method ?? 'GET', nostrAuth);
     if (nostrHeader) {
       headers['Authorization'] = nostrHeader;
@@ -137,16 +139,18 @@ async function fetchFeeds(
   if (!baseUrl) {
     throw new Error('Invalid web app URL');
   }
-  const url = `${baseUrl}/api/trpc/feed.getFeeds?input=${encodeURIComponent('{}')}`;
+  // tRPC with superjson expects input wrapped in {"json": ...}
+  const input = JSON.stringify({ json: {} });
+  const url = `${baseUrl}/api/trpc/feed.getFeeds?input=${encodeURIComponent(input)}`;
 
   try {
-    const response = await fetchWithAuth<{ result: { data: FeedsResponse[] } }>(
+    const response = await fetchWithAuth<{ result: { data: { json: FeedsResponse[] } } }>(
       url,
       authToken,
       {},
       nostrAuth
     );
-    return response.result.data;
+    return response.result.data.json;
   } catch (error) {
     console.error('Failed to fetch feeds:', error);
     throw error;
@@ -163,17 +167,18 @@ async function fetchNewItems(
   if (!baseUrl) {
     throw new Error('Invalid web app URL');
   }
-  const input = JSON.stringify({ limit });
+  // tRPC with superjson expects input wrapped in {"json": ...}
+  const input = JSON.stringify({ json: { limit } });
   const url = `${baseUrl}/api/trpc/feed.getFeedItems?input=${encodeURIComponent(input)}`;
 
   try {
-    const response = await fetchWithAuth<{ result: { data: FeedItemsResponse } }>(
+    const response = await fetchWithAuth<{ result: { data: { json: FeedItemsResponse } } }>(
       url,
       authToken,
       {},
       nostrAuth
     );
-    return response.result.data.items;
+    return response.result.data.json.items;
   } catch (error) {
     console.error('Failed to fetch feed items:', error);
     throw error;
@@ -197,7 +202,8 @@ async function markItemAsRead(itemId: string): Promise<void> {
 
   if (authToken) {
     headers['Authorization'] = `Bearer ${authToken}`;
-  } else if (nostrAuth) {
+  } else if (nostrAuth && nostrAuth.pubkey) {
+    headers['x-nostr-pubkey'] = nostrAuth.pubkey;
     const nostrHeader = await getNostrAuthHeader(url, 'POST', nostrAuth);
     if (nostrHeader) {
       headers['Authorization'] = nostrHeader;
@@ -229,7 +235,8 @@ async function markAllAsRead(): Promise<void> {
 
   if (authToken) {
     headers['Authorization'] = `Bearer ${authToken}`;
-  } else if (nostrAuth) {
+  } else if (nostrAuth && nostrAuth.pubkey) {
+    headers['x-nostr-pubkey'] = nostrAuth.pubkey;
     const nostrHeader = await getNostrAuthHeader(url, 'POST', nostrAuth);
     if (nostrHeader) {
       headers['Authorization'] = nostrHeader;
@@ -458,6 +465,37 @@ async function handleMessage(
       });
       updateBadge(0);
       return { success: true };
+    }
+
+    case 'SYNC_WEB_AUTH': {
+      const session = message['session'] as {
+        pubkey: string;
+        npub: string;
+        method: string;
+      } | null;
+
+      if (!session) {
+        // User logged out from web app
+        await saveStorageData({
+          nostrAuth: null,
+          feeds: [],
+          seenItemIds: [],
+        });
+        updateBadge(0);
+        return { success: true };
+      }
+
+      // Sync auth from web app
+      const nostrAuth: NostrAuthData = {
+        method: session.method === 'nip07' ? 'nip07' : 'nsec',
+        pubkey: session.pubkey,
+        npub: session.npub,
+        privateKeyHex: null, // Web app doesn't share private key
+      };
+
+      await saveStorageData({ nostrAuth });
+      void refreshFeeds();
+      return { success: true, data: { npub: session.npub, pubkey: session.pubkey } };
     }
 
     case 'GET_NOSTR_AUTH': {
