@@ -17,10 +17,11 @@ Built with TypeScript and Manifest V3.
 ## Installation
 
 1. Clone the repo or download the extension folder.
-2. Open Chrome and go to `chrome://extensions/`
-3. Enable "Developer mode"
-4. Click "Load unpacked"
-5. Select the extension folder (with manifest.json)
+2. Run `npm install` then `npm run build` to compile the extension.
+3. Open Chrome and go to `chrome://extensions/`
+4. Enable "Developer mode"
+5. Click "Load unpacked"
+6. Select the `dist/` folder (with manifest.json)
 
 ## Usage
 
