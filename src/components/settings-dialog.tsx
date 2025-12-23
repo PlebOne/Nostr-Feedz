@@ -124,20 +124,20 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
     status: 'idle',
     lastSync: null,
   })
-  
+
   // Category management state
   const [newCategoryName, setNewCategoryName] = useState('')
   const [newCategoryColor, setNewCategoryColor] = useState(CATEGORY_COLORS[0])
   const [newCategoryIcon, setNewCategoryIcon] = useState('📁')
   const [editingCategory, setEditingCategory] = useState<Category | null>(null)
   const [categoryError, setCategoryError] = useState('')
-  
+
   // tRPC for categories
   const utils = api.useUtils()
   const { data: categories = [] } = api.feed.getCategories.useQuery(undefined, {
     enabled: isOpen && !!userPubkey,
   })
-  
+
   const createCategoryMutation = api.feed.createCategory.useMutation({
     onSuccess: () => {
       void utils.feed.getCategories.invalidate()
@@ -150,7 +150,7 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
       setCategoryError(error.message)
     },
   })
-  
+
   const updateCategoryMutation = api.feed.updateCategory.useMutation({
     onSuccess: () => {
       void utils.feed.getCategories.invalidate()
@@ -161,12 +161,15 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
       setCategoryError(error.message)
     },
   })
-  
+
   const deleteCategoryMutation = api.feed.deleteCategory.useMutation({
     onSuccess: () => {
       void utils.feed.getCategories.invalidate()
     },
   })
+
+  // Mutation for updating relays on server
+  const updateRelaysMutation = api.feed.updateNostrRelays.useMutation()
 
   // Load relays from localStorage on mount
   useEffect(() => {
@@ -182,7 +185,7 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
     } else {
       setRelays(DEFAULT_RELAYS.map(url => ({ url, status: 'disconnected' as const })))
     }
-    
+
     // Load last sync time
     const lastSync = getLastSyncTime()
     if (lastSync) {
@@ -190,12 +193,18 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
     }
   }, [])
 
-  // Save relays to localStorage whenever they change
+  // Save relays to localStorage and server whenever they change
   useEffect(() => {
     if (relays.length > 0) {
-      localStorage.setItem('nostr_relays', JSON.stringify(relays.map(r => r.url)))
+      const urls = relays.map(r => r.url)
+      localStorage.setItem('nostr_relays', JSON.stringify(urls))
+
+      // Also save to server if logged in
+      if (userPubkey) {
+        updateRelaysMutation.mutate({ relays: urls })
+      }
     }
-  }, [relays])
+  }, [relays, userPubkey])
 
   // Export subscriptions to Nostr
   const handleExportToNostr = async () => {
@@ -208,7 +217,7 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
 
     try {
       const subscriptionList = buildSubscriptionListFromFeeds(feeds)
-      
+
       const signEvent = async (event: UnsignedEvent): Promise<Event> => {
         const pubkey = await window.nostr!.getPublicKey()
         const signedEvent = await window.nostr!.signEvent({ ...event, pubkey })
@@ -217,7 +226,7 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
       }
 
       const result = await publishSubscriptionList(subscriptionList, signEvent)
-      
+
       if (result.success) {
         const now = Math.floor(Date.now() / 1000)
         setLastSyncTime(now)
@@ -246,7 +255,7 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
 
     try {
       const result = await fetchSubscriptionList(userPubkey)
-      
+
       if (!result.success) {
         setSyncState({
           status: 'error',
@@ -268,7 +277,7 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
 
       // Merge with current feeds
       const mergeResult = mergeSubscriptionLists(feeds, result.data)
-      
+
       if (mergeResult.toAdd.length === 0) {
         setSyncState({ status: 'success', lastSync: syncState.lastSync })
         alert('All remote subscriptions are already in your feed list.')
@@ -294,9 +303,9 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
   // Confirm import
   const handleConfirmImport = async () => {
     if (!syncState.pendingImport || !onImportFeeds) return
-    
+
     setSyncState(prev => ({ ...prev, status: 'syncing' }))
-    
+
     try {
       await onImportFeeds(syncState.pendingImport.toAdd)
       const now = Math.floor(Date.now() / 1000)
@@ -390,11 +399,10 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left text-sm transition-colors mb-1 ${
-                  activeTab === tab.id
+                className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left text-sm transition-colors mb-1 ${activeTab === tab.id
                     ? 'bg-blue-600 text-white'
                     : 'text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
-                }`}
+                  }`}
               >
                 <span>{tab.icon}</span>
                 <span>{tab.label}</span>
@@ -416,7 +424,7 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
                     Reset to Defaults
                   </button>
                 </div>
-                
+
                 <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">
                   Manage which Nostr relays to use for fetching content. More relays = better content discovery but slower performance.
                 </p>
@@ -464,11 +472,10 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
                           key={relay.url}
                           onClick={() => !isAdded && addPopularRelay(relay.url)}
                           disabled={isAdded}
-                          className={`px-3 py-1 rounded-full text-sm flex items-center gap-1 transition-colors ${
-                            isAdded
+                          className={`px-3 py-1 rounded-full text-sm flex items-center gap-1 transition-colors ${isAdded
                               ? 'bg-slate-100 text-slate-400 dark:bg-slate-700 dark:text-slate-500 cursor-not-allowed'
                               : 'bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/50 dark:text-blue-300 dark:hover:bg-blue-900'
-                          }`}
+                            }`}
                         >
                           {isAdded && <span>✓</span>}
                           {relay.name}
@@ -522,11 +529,10 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
                 </p>
                 <div className="flex gap-4 mb-6">
                   <label
-                    className={`flex-1 p-4 rounded-lg border cursor-pointer transition-colors ${
-                      organizationMode === 'tags'
+                    className={`flex-1 p-4 rounded-lg border cursor-pointer transition-colors ${organizationMode === 'tags'
                         ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/30'
                         : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800'
-                    }`}
+                      }`}
                   >
                     <input
                       type="radio"
@@ -545,11 +551,10 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
                     </p>
                   </label>
                   <label
-                    className={`flex-1 p-4 rounded-lg border cursor-pointer transition-colors ${
-                      organizationMode === 'categories'
+                    className={`flex-1 p-4 rounded-lg border cursor-pointer transition-colors ${organizationMode === 'categories'
                         ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/30'
                         : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800'
-                    }`}
+                      }`}
                   >
                     <input
                       type="radio"
@@ -586,7 +591,7 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
                         <input
                           type="text"
                           value={editingCategory ? editingCategory.name : newCategoryName}
-                          onChange={(e) => editingCategory 
+                          onChange={(e) => editingCategory
                             ? setEditingCategory({ ...editingCategory, name: e.target.value })
                             : setNewCategoryName(e.target.value)
                           }
@@ -594,7 +599,7 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
                           className="flex-1 px-3 py-2 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-md text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
                         />
                       </div>
-                      
+
                       {/* Icon picker */}
                       <div className="mb-3">
                         <label className="block text-xs text-slate-600 dark:text-slate-400 mb-1">Icon</label>
@@ -602,15 +607,14 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
                           {CATEGORY_ICONS.map((icon) => (
                             <button
                               key={icon}
-                              onClick={() => editingCategory 
+                              onClick={() => editingCategory
                                 ? setEditingCategory({ ...editingCategory, icon })
                                 : setNewCategoryIcon(icon)
                               }
-                              className={`w-8 h-8 text-lg rounded flex items-center justify-center ${
-                                (editingCategory ? editingCategory.icon : newCategoryIcon) === icon
+                              className={`w-8 h-8 text-lg rounded flex items-center justify-center ${(editingCategory ? editingCategory.icon : newCategoryIcon) === icon
                                   ? 'bg-blue-100 dark:bg-blue-900 ring-2 ring-blue-500'
                                   : 'hover:bg-slate-200 dark:hover:bg-slate-600'
-                              }`}
+                                }`}
                             >
                               {icon}
                             </button>
@@ -625,15 +629,14 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
                           {CATEGORY_COLORS.map((color) => (
                             <button
                               key={color}
-                              onClick={() => editingCategory 
+                              onClick={() => editingCategory
                                 ? setEditingCategory({ ...editingCategory, color })
                                 : setNewCategoryColor(color)
                               }
-                              className={`w-6 h-6 rounded-full ${
-                                (editingCategory ? editingCategory.color : newCategoryColor) === color
+                              className={`w-6 h-6 rounded-full ${(editingCategory ? editingCategory.color : newCategoryColor) === color
                                   ? 'ring-2 ring-offset-2 ring-blue-500'
                                   : ''
-                              }`}
+                                }`}
                               style={{ backgroundColor: color }}
                             />
                           ))}
@@ -754,11 +757,10 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
                   {MARK_READ_OPTIONS.map((option) => (
                     <label
                       key={option.value}
-                      className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-                        markReadBehavior === option.value
+                      className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${markReadBehavior === option.value
                           ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/30'
                           : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800'
-                      }`}
+                        }`}
                     >
                       <input
                         type="radio"
@@ -785,7 +787,7 @@ export function SettingsDialog({ isOpen, onClose, markReadBehavior, onChangeMark
                 <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">
                   Sync your RSS and Nostr subscriptions across devices using Nostr events (kind 30404).
                 </p>
-                
+
                 {/* Last sync time */}
                 <div className="text-sm text-slate-500 dark:text-slate-400 mb-4">
                   Last synced: {formatLastSync(syncState.lastSync)}

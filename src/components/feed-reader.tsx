@@ -9,11 +9,14 @@ import { AddFeedModal } from './add-feed-modal'
 import { SettingsDialog, MarkReadBehavior, OrganizationMode } from './settings-dialog'
 import { FormattedContent } from './formatted-content'
 import { SimplePool } from 'nostr-tools'
-import { 
-  fetchSubscriptionList, 
+import {
+  fetchSubscriptionList,
   mergeSubscriptionLists,
   getLastSyncTime,
+  publishSubscriptionList,
+  buildSubscriptionListFromFeeds,
 } from '@/lib/nostr-sync'
+import type { UnsignedEvent, Event } from 'nostr-tools'
 import type { inferRouterOutputs } from '@trpc/server'
 import type { AppRouter } from '@/server/api/root'
 
@@ -54,7 +57,7 @@ export function FeedReader() {
   const { theme, toggleTheme } = useTheme()
   const router = useRouter()
   const utils = api.useUtils()
-  
+
   // Add logging to track user state
   useEffect(() => {
     console.log('🔍 FeedReader: User state changed:', {
@@ -90,33 +93,35 @@ export function FeedReader() {
   const markReadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hasCheckedSyncRef = useRef(false)
   const hasRefreshedOnLoginRef = useRef(false)
+  const lastAutoPublishRef = useRef<string | null>(null)
+  const autoPublishTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const refreshIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  
+
   // Mobile responsive state
   const [showSidebar, setShowSidebar] = useState(false)
   const [mobileView, setMobileView] = useState<'list' | 'content'>('list')
-  
+
   // Organization mode (tags vs categories) - fetched from server
   const { data: userPreference } = api.feed.getUserPreference.useQuery(undefined, {
     enabled: !!user?.npub,
   })
   const organizationMode: OrganizationMode = userPreference?.organizationMode ?? 'tags'
-  
+
   const updatePreferenceMutation = api.feed.updateUserPreference.useMutation({
     onSuccess: () => {
       void utils.feed.getUserPreference.invalidate()
     },
   })
-  
+
   const handleOrganizationModeChange = (mode: OrganizationMode) => {
     updatePreferenceMutation.mutate({ organizationMode: mode })
   }
-  
+
   // Categories query
   const { data: categories = [] } = api.feed.getCategories.useQuery(undefined, {
     enabled: !!user?.npub,
   })
-  
+
   const { data: categoriesWithUnread = [] } = api.feed.getCategoriesWithUnread.useQuery(undefined, {
     enabled: !!user?.npub && organizationMode === 'categories',
   })
@@ -171,13 +176,13 @@ export function FeedReader() {
         setShowViewOptions(false)
       }
     }
-    
+
     if (openMenuFeedId || showViewOptions) {
       document.addEventListener('click', handleClickOutside)
       return () => document.removeEventListener('click', handleClickOutside)
     }
   }, [openMenuFeedId, showViewOptions])
-  
+
   // tRPC queries - only run when user is authenticated
   const getFeedsInput = useMemo(() => {
     if (organizationMode === 'categories' && selectedCategoryId) {
@@ -188,14 +193,14 @@ export function FeedReader() {
     }
     return undefined
   }, [organizationMode, selectedCategoryId, selectedTags])
-  
+
   const { data: feedsData = [], refetch: refetchFeeds, isLoading: isFeedsLoading, isFetched: isFeedsFetched } = api.feed.getFeeds.useQuery(
     getFeedsInput,
     {
       enabled: !!user && !!user.npub,
     }
   )
-  
+
   // Filter out any feeds with invalid IDs
   const feeds = feedsData.filter((f: any) => f && f.id && typeof f.id === 'string' && f.id !== 'undefined')
 
@@ -213,23 +218,23 @@ export function FeedReader() {
       try {
         const result = await fetchSubscriptionList(user.npub)
         if (!result.success || !result.data) return
-        
+
         // Check if there are new subscriptions to import
         if (result.data.rss.length === 0 && result.data.nostr.length === 0) return
-        
+
         const currentFeeds = feeds.map((f) => ({
           type: f.type,
           url: f.url || f.npub || '',
           tags: f.tags,
         }))
-        
+
         // Debug: Log exactly what we're comparing
         console.log('🔍 AUTO-SYNC DEBUG - feeds from DB:', feeds.map(f => ({ type: f.type, url: f.url, npub: f.npub, title: f.title })))
         console.log('🔍 AUTO-SYNC DEBUG - currentFeeds mapped:', currentFeeds)
         console.log('🔍 AUTO-SYNC DEBUG - remote data:', result.data)
-        
+
         const mergeResult = mergeSubscriptionLists(currentFeeds, result.data)
-        
+
         if (mergeResult.toAdd.length > 0) {
           setPendingSyncImport(mergeResult.toAdd)
           setShowSyncPrompt(true)
@@ -238,39 +243,39 @@ export function FeedReader() {
         console.error('Auto-sync check failed:', error)
       }
     }
-    
+
     checkRemoteSync()
   }, [user?.npub, feedsData, isFeedsFetched, isFeedsLoading])
-  
+
   const { data: userTags = [] } = api.feed.getUserTags.useQuery(undefined, {
     enabled: !!user && !!user.npub,
   })
-  
+
   // Favorites query
   const { data: favoritesData, isLoading: favoritesLoading } = api.feed.getFavorites.useQuery(
     FAVORITES_QUERY_INPUT,
     { enabled: !!user && !!user.npub && sidebarView === 'favorites' }
   )
-  
+
   // When tags are selected OR a category is selected, and viewing "All Items", 
   // we need to filter items to only show items from feeds that match the selected tags/category
   const filteredFeedIds = useMemo(() => {
     // Only filter when viewing "All Items" and feeds are loaded
     if (selectedFeed !== 'all' || feeds.length === 0) return undefined
-    
+
     // Filter by tags (tags mode) or by category (when a category is selected)
-    const shouldFilter = (organizationMode === 'tags' && selectedTags.length > 0) || 
-                         (organizationMode === 'categories' && selectedCategoryId)
-    
+    const shouldFilter = (organizationMode === 'tags' && selectedTags.length > 0) ||
+      (organizationMode === 'categories' && selectedCategoryId)
+
     if (!shouldFilter) return undefined
-    
+
     // Return all feed IDs from the filtered feeds array (already filtered by getFeeds query)
     return feeds.map((f: any) => f.id).filter((id: any) => id && typeof id === 'string' && id !== 'undefined')
   }, [selectedFeed, feeds, organizationMode, selectedTags, selectedCategoryId])
-  
+
   // Ensure we don't pass invalid feedId values
   const safeFeedId = selectedFeed === 'all' ? undefined : (selectedFeed && typeof selectedFeed === 'string' && selectedFeed !== 'undefined' ? selectedFeed : undefined)
-  
+
   // Build query input conditionally to avoid serialization issues with undefined
   const feedQueryInput = useMemo(() => {
     const input: { feedId?: string; feedIds?: string[] } = {}
@@ -319,7 +324,7 @@ export function FeedReader() {
       }
     })
   }
-  
+
   console.log('🔍 Feed query params:', {
     selectedFeed,
     safeFeedId,
@@ -331,13 +336,13 @@ export function FeedReader() {
 
   const { data: feedItemsData, isLoading: itemsLoading } = api.feed.getFeedItems.useQuery(
     feedQueryInput,
-    { 
+    {
       enabled: !!user && !!user.npub,
       // Don't retry on 500 errors to avoid spamming the server
       retry: false,
     }
   )
-  
+
   // Mutations
   const subscribeFeedMutation = api.feed.subscribeFeed.useMutation({
     onSuccess: () => {
@@ -349,7 +354,7 @@ export function FeedReader() {
       setFeedError(error.message)
     },
   })
-  
+
   const unsubscribeFeedMutation = api.feed.unsubscribeFeed.useMutation({
     onSuccess: () => {
       invalidateFeedData()
@@ -357,13 +362,13 @@ export function FeedReader() {
       setSelectedFeed('all')
     },
   })
-  
+
   const refreshFeedMutation = api.feed.refreshFeed.useMutation({
     onSuccess: () => {
       invalidateFeedData()
     },
   })
-  
+
   const refreshNostrFeedMutation = api.feed.refreshNostrFeed.useMutation({
     onSuccess: () => {
       invalidateFeedData()
@@ -386,7 +391,7 @@ export function FeedReader() {
       setIsRefreshingAll(false)
     },
   })
-  
+
   const updateTagsMutation = api.feed.updateSubscriptionTags.useMutation({
     onSuccess: () => {
       invalidateFeedData()
@@ -395,7 +400,7 @@ export function FeedReader() {
       setEditTagInput('')
     },
   })
-  
+
   const updateCategoryMutation = api.feed.updateSubscriptionCategory.useMutation({
     onSuccess: () => {
       invalidateFeedData()
@@ -403,7 +408,7 @@ export function FeedReader() {
       setShowCategoryPicker(null)
     },
   })
-  
+
   const invalidateFeedData = () => {
     void utils.feed.getFeedItems.invalidate()
     void utils.feed.getFeeds.invalidate()
@@ -421,16 +426,16 @@ export function FeedReader() {
   // Auto-refresh on login (once per session)
   // Separate effect to detect when feeds are first loaded
   const [feedsLoaded, setFeedsLoaded] = useState(false)
-  
+
   useEffect(() => {
     if (feeds.length > 0 && !feedsLoaded) {
       setFeedsLoaded(true)
     }
   }, [feeds.length, feedsLoaded])
-  
+
   useEffect(() => {
     if (!user?.npub || hasRefreshedOnLoginRef.current || !feedsLoaded) return
-    
+
     // Check if we've refreshed recently (within 5 minutes)
     const now = Date.now()
     const fiveMinutes = 5 * 60 * 1000
@@ -467,6 +472,59 @@ export function FeedReader() {
     }
   }, [user?.npub, handleRefreshAllFeeds])
 
+  // Auto-publish sync whenever feeds change
+  useEffect(() => {
+    // Only auto-publish if user is logged in with a NIP-07 extension
+    if (!user?.npub || !window.nostr || feeds.length === 0) return
+
+    // Create a stable representation of the current feeds for comparison
+    const feedsState = JSON.stringify(feeds.map(f => ({ url: f.url, npub: f.npub, tags: f.tags })))
+
+    // Skip if nothing changed since last publish
+    if (lastAutoPublishRef.current === feedsState) return
+
+    // Debounce the auto-publish
+    if (autoPublishTimeoutRef.current) {
+      clearTimeout(autoPublishTimeoutRef.current)
+    }
+
+    autoPublishTimeoutRef.current = setTimeout(async () => {
+      try {
+        console.log('🔄 Auto-publishing subscriptions to Nostr...')
+
+        const subscriptionList = buildSubscriptionListFromFeeds(feeds.map(f => ({
+          type: f.type,
+          url: f.url || f.npub || '',
+          tags: f.tags,
+        })))
+
+        const signEvent = async (event: UnsignedEvent): Promise<Event> => {
+          const pubkey = await window.nostr!.getPublicKey()
+          const signedEvent = await window.nostr!.signEvent({ ...event, pubkey })
+          if (!signedEvent) throw new Error('Failed to sign event')
+          return signedEvent as Event
+        }
+
+        const result = await publishSubscriptionList(subscriptionList, signEvent)
+
+        if (result.success) {
+          console.log('✅ Auto-published subscriptions to Nostr')
+          lastAutoPublishRef.current = feedsState
+        } else {
+          console.error('❌ Auto-publish failed:', result.error)
+        }
+      } catch (error) {
+        console.error('❌ Auto-publish failed:', error)
+      }
+    }, 5000) // 5 second debounce
+
+    return () => {
+      if (autoPublishTimeoutRef.current) {
+        clearTimeout(autoPublishTimeoutRef.current)
+      }
+    }
+  }, [feeds, user?.npub])
+
   const markAsReadMutation = api.feed.markAsRead.useMutation({
     onSuccess: (_data, { itemId }) => {
       updateFeedItemCache(itemId, () => ({ isRead: true }))
@@ -479,21 +537,21 @@ export function FeedReader() {
       invalidateFeedData()
     },
   })
-  
+
   const markAllAsReadMutation = api.feed.markFeedAsRead.useMutation({
     onSuccess: () => {
       invalidateFeedData()
     },
   })
-  
+
   const addFavoriteMutation = api.feed.addFavorite.useMutation({
     onSuccess: invalidateFeedData,
   })
-  
+
   const removeFavoriteMutation = api.feed.removeFavorite.useMutation({
     onSuccess: invalidateFeedData,
   })
-  
+
   // Prepare feeds list with "All Items" option
   const allFeeds: Feed[] = [
     {
@@ -513,57 +571,57 @@ export function FeedReader() {
       categoryId: feed.categoryId || undefined,
     })),
   ]
-  
+
   // Calculate filtered tags based on currently visible feeds
   // When tags are selected, only show tags that appear on the filtered feeds
-  const filteredTags = selectedTags.length > 0 
+  const filteredTags = selectedTags.length > 0
     ? (() => {
-        const tagMap = new Map<string, { tag: string; unreadCount: number; feedCount: number }>()
-        
-        // Only count tags from feeds that match the current filter
-        for (const feed of feeds) {
-          const feedUnreadCount = feed.unreadCount || 0
-          
-          for (const tag of (feed.tags || [])) {
-            const existing = tagMap.get(tag)
-            if (existing) {
-              existing.unreadCount += feedUnreadCount
-              existing.feedCount += 1
-            } else {
-              tagMap.set(tag, {
-                tag,
-                unreadCount: feedUnreadCount,
-                feedCount: 1,
-              })
-            }
+      const tagMap = new Map<string, { tag: string; unreadCount: number; feedCount: number }>()
+
+      // Only count tags from feeds that match the current filter
+      for (const feed of feeds) {
+        const feedUnreadCount = feed.unreadCount || 0
+
+        for (const tag of (feed.tags || [])) {
+          const existing = tagMap.get(tag)
+          if (existing) {
+            existing.unreadCount += feedUnreadCount
+            existing.feedCount += 1
+          } else {
+            tagMap.set(tag, {
+              tag,
+              unreadCount: feedUnreadCount,
+              feedCount: 1,
+            })
           }
         }
-        
-        const tags = Array.from(tagMap.values())
-        return tagSortOrder === 'unread'
-          ? tags.sort((a, b) => b.unreadCount - a.unreadCount || a.tag.localeCompare(b.tag))
-          : tags.sort((a, b) => a.tag.localeCompare(b.tag))
-      })()
+      }
+
+      const tags = Array.from(tagMap.values())
+      return tagSortOrder === 'unread'
+        ? tags.sort((a, b) => b.unreadCount - a.unreadCount || a.tag.localeCompare(b.tag))
+        : tags.sort((a, b) => a.tag.localeCompare(b.tag))
+    })()
     : tagSortOrder === 'unread'
       ? [...userTags].sort((a, b) => b.unreadCount - a.unreadCount || a.tag.localeCompare(b.tag))
       : userTags
-  
+
   // Filter and sort feed items based on view options
   const allFeedItems = feedItemsData?.items || []
   let feedItems = allFeedItems
-  
+
   // Apply read/unread filter
   if (viewFilter === 'unread') {
     feedItems = feedItems.filter((item: any) => !item.isRead)
   } else if (viewFilter === 'read') {
     feedItems = feedItems.filter((item: any) => item.isRead)
   }
-  
+
   // Apply sort order
   if (sortOrder === 'oldest') {
     feedItems = [...feedItems].reverse()
   }
-  
+
   const selectedItemData = selectedItem
     ? (feedItems.find(item => item.id === selectedItem) || allFeedItems.find(item => item.id === selectedItem) || null)
     : null
@@ -593,7 +651,7 @@ export function FeedReader() {
       }
     }
   }, [selectedItem, markReadBehavior, selectedItemIsRead, markAsReadMutation])
-  
+
   // Handle adding new feed
   const handleAddFeed = async (type: 'RSS' | 'NOSTR', url?: string, npub?: string, title?: string, tags?: string[], categoryId?: string) => {
     try {
@@ -609,7 +667,7 @@ export function FeedReader() {
       // Error is handled by onError callback
     }
   }
-  
+
   // Handle marking item as read when clicked
   const handleItemClick = (itemId: string) => {
     setSelectedItem(itemId)
@@ -628,7 +686,7 @@ export function FeedReader() {
       markAsReadMutation.mutate({ itemId: item.id })
     }
   }
-  
+
   // Handle toggling favorite status
   const handleToggleFavorite = (itemId: string, isFavorited: boolean) => {
     updateFeedItemCache(itemId, () => ({ isFavorited: !isFavorited }))
@@ -657,10 +715,10 @@ export function FeedReader() {
     try {
       // Get the user's public key
       const pubkey = await window.nostr.getPublicKey()
-      
+
       // Build the share URL - for Nostr posts use habla.news, otherwise use original URL
       const shareUrl = originalUrl || item.url || ''
-      
+
       // Create the note content with attribution
       const noteContent = `📖 ${item.title}\n\n${shareUrl}\n\n— shared from nostrfeedz.com`
 
@@ -727,14 +785,14 @@ export function FeedReader() {
       }
     }
   }
-  
+
   // Handle removing a feed
   const handleRemoveFeed = (feedId: string, feedTitle: string) => {
     if (confirm(`Are you sure you want to unsubscribe from "${feedTitle}"?`)) {
       unsubscribeFeedMutation.mutate({ feedId })
     }
   }
-  
+
   // Handle refreshing a feed
   const handleRefreshFeed = (feedId: string, feedType: 'RSS' | 'NOSTR' | 'NOSTR_VIDEO') => {
     if (feedType === 'RSS') {
@@ -752,8 +810,8 @@ export function FeedReader() {
 
   // Handle tag selection
   const handleToggleTag = (tag: string) => {
-    setSelectedTags(prev => 
-      prev.includes(tag) 
+    setSelectedTags(prev =>
+      prev.includes(tag)
         ? prev.filter(t => t !== tag)
         : [...prev, tag]
     )
@@ -838,7 +896,7 @@ export function FeedReader() {
             </button>
           </div>
         </div>
-        
+
         {/* Mobile Feeds/Tags Toggle */}
         <div className="px-4 pb-2">
           <div className="flex bg-slate-100 dark:bg-slate-700 rounded-lg p-1">
@@ -848,11 +906,10 @@ export function FeedReader() {
                 setSelectedTags([])
                 setShowSidebar(true)
               }}
-              className={`flex-1 px-2 py-1 text-sm rounded-md transition-colors ${
-                sidebarView === 'feeds'
-                  ? 'bg-white dark:bg-slate-600 shadow-sm font-medium text-slate-900 dark:text-slate-100'
-                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100'
-              }`}
+              className={`flex-1 px-2 py-1 text-sm rounded-md transition-colors ${sidebarView === 'feeds'
+                ? 'bg-white dark:bg-slate-600 shadow-sm font-medium text-slate-900 dark:text-slate-100'
+                : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100'
+                }`}
             >
               Feeds
             </button>
@@ -861,11 +918,10 @@ export function FeedReader() {
                 setSidebarView('tags')
                 setShowSidebar(true)
               }}
-              className={`flex-1 px-2 py-1 text-sm rounded-md transition-colors ${
-                sidebarView === 'tags'
-                  ? 'bg-white dark:bg-slate-600 shadow-sm font-medium text-slate-900 dark:text-slate-100'
-                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100'
-              }`}
+              className={`flex-1 px-2 py-1 text-sm rounded-md transition-colors ${sidebarView === 'tags'
+                ? 'bg-white dark:bg-slate-600 shadow-sm font-medium text-slate-900 dark:text-slate-100'
+                : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100'
+                }`}
             >
               Tags
             </button>
@@ -875,11 +931,10 @@ export function FeedReader() {
                 setSelectedTags([])
                 setShowSidebar(true)
               }}
-              className={`flex-1 px-2 py-1 text-sm rounded-md transition-colors ${
-                sidebarView === 'favorites'
-                  ? 'bg-white dark:bg-slate-600 shadow-sm font-medium text-slate-900 dark:text-slate-100'
-                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100'
-              }`}
+              className={`flex-1 px-2 py-1 text-sm rounded-md transition-colors ${sidebarView === 'favorites'
+                ? 'bg-white dark:bg-slate-600 shadow-sm font-medium text-slate-900 dark:text-slate-100'
+                : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100'
+                }`}
             >
               ⭐
             </button>
@@ -889,7 +944,7 @@ export function FeedReader() {
 
       {/* Backdrop for mobile sidebar */}
       {showSidebar && (
-        <div 
+        <div
           className="md:hidden fixed inset-0 bg-black bg-opacity-50 dark:bg-opacity-70 z-[45]"
           onClick={() => setShowSidebar(false)}
         />
@@ -954,21 +1009,19 @@ export function FeedReader() {
                 setSelectedTags([])
                 setSelectedCategoryId(null)
               }}
-              className={`flex-1 px-2 py-1 text-sm rounded-md transition-colors ${
-                sidebarView === 'feeds'
-                  ? 'bg-white dark:bg-slate-600 shadow-sm font-medium text-slate-900 dark:text-slate-100'
-                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100'
-              }`}
+              className={`flex-1 px-2 py-1 text-sm rounded-md transition-colors ${sidebarView === 'feeds'
+                ? 'bg-white dark:bg-slate-600 shadow-sm font-medium text-slate-900 dark:text-slate-100'
+                : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100'
+                }`}
             >
               Feeds
             </button>
             <button
               onClick={() => setSidebarView('tags')}
-              className={`flex-1 px-2 py-1 text-sm rounded-md transition-colors ${
-                sidebarView === 'tags'
-                  ? 'bg-white dark:bg-slate-600 shadow-sm font-medium text-slate-900 dark:text-slate-100'
-                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100'
-              }`}
+              className={`flex-1 px-2 py-1 text-sm rounded-md transition-colors ${sidebarView === 'tags'
+                ? 'bg-white dark:bg-slate-600 shadow-sm font-medium text-slate-900 dark:text-slate-100'
+                : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100'
+                }`}
             >
               {organizationMode === 'categories' ? 'Categories' : 'Tags'}
             </button>
@@ -978,11 +1031,10 @@ export function FeedReader() {
                 setSelectedTags([])
                 setSelectedCategoryId(null)
               }}
-              className={`flex-1 px-2 py-1 text-sm rounded-md transition-colors ${
-                sidebarView === 'favorites'
-                  ? 'bg-white dark:bg-slate-600 shadow-sm font-medium text-slate-900 dark:text-slate-100'
-                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100'
-              }`}
+              className={`flex-1 px-2 py-1 text-sm rounded-md transition-colors ${sidebarView === 'favorites'
+                ? 'bg-white dark:bg-slate-600 shadow-sm font-medium text-slate-900 dark:text-slate-100'
+                : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100'
+                }`}
             >
               ⭐
             </button>
@@ -1023,201 +1075,198 @@ export function FeedReader() {
         {/* Feeds List */}
         {sidebarView === 'feeds' && (
           <div className="flex-1 overflow-y-auto">{/* Scrollable feed list */}
-          {allFeeds.map((feed) => (
-            <div
-              key={feed.id}
-              className={`relative group w-full text-left hover:bg-slate-50 dark:hover:bg-slate-700/50 border-b border-slate-100 dark:border-slate-700 ${
-                selectedFeed === feed.id ? 'bg-blue-50 dark:bg-blue-900/30 border-l-4 border-l-blue-500' : ''
-              }`}
-            >
-              <button
-                onClick={() => {
-                  setSelectedFeed(feed.id)
-                  setShowSidebar(false)
-                }}
-                className="w-full px-4 py-2"
+            {allFeeds.map((feed) => (
+              <div
+                key={feed.id}
+                className={`relative group w-full text-left hover:bg-slate-50 dark:hover:bg-slate-700/50 border-b border-slate-100 dark:border-slate-700 ${selectedFeed === feed.id ? 'bg-blue-50 dark:bg-blue-900/30 border-l-4 border-l-blue-500' : ''
+                  }`}
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <span className="text-xs">
-                      {feed.type === 'RSS' ? '📰' : feed.type === 'NOSTR_VIDEO' ? '🎬' : '⚡'}
-                    </span>
-                    <span className="text-sm font-medium text-slate-800 dark:text-slate-100 truncate">
-                      {feed.title}
-                    </span>
-                  </div>
-                  {feed.unreadCount > 0 && (
-                    <span className="text-xs bg-blue-500 text-white rounded-full px-2 py-1 min-w-[20px] text-center">
-                      {feed.unreadCount}
-                    </span>
-                  )}
-                </div>
-                {feed.url && (
-                  <div className="text-xs text-slate-500 dark:text-slate-400 truncate mt-1">
-                    {new URL(feed.url).hostname}
-                  </div>
-                )}
-                {feed.npub && (
-                  <div className="text-xs text-slate-500 dark:text-slate-400 truncate mt-1">
-                    {feed.npub.slice(0, 16)}...
-                  </div>
-                )}
-                {/* Show tags if any */}
-                {feed.tags && feed.tags.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    {feed.tags.map(tag => (
-                      <span
-                        key={tag}
-                        className="inline-block px-1.5 py-0.5 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded text-[10px]"
-                      >
-                        {tag}
+                <button
+                  onClick={() => {
+                    setSelectedFeed(feed.id)
+                    setShowSidebar(false)
+                  }}
+                  className="w-full px-4 py-2"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-xs">
+                        {feed.type === 'RSS' ? '📰' : feed.type === 'NOSTR_VIDEO' ? '🎬' : '⚡'}
                       </span>
-                    ))}
+                      <span className="text-sm font-medium text-slate-800 dark:text-slate-100 truncate">
+                        {feed.title}
+                      </span>
+                    </div>
+                    {feed.unreadCount > 0 && (
+                      <span className="text-xs bg-blue-500 text-white rounded-full px-2 py-1 min-w-[20px] text-center">
+                        {feed.unreadCount}
+                      </span>
+                    )}
                   </div>
-                )}
-              </button>
-              
-              {/* Menu button - only show for actual feeds, not "All Items" */}
-              {feed.id !== 'all' && (
-                <div className="absolute right-2 top-2">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setOpenMenuFeedId(openMenuFeedId === feed.id ? null : feed.id)
-                    }}
-                    className="opacity-0 group-hover:opacity-100 bg-slate-200 dark:bg-slate-600 hover:bg-slate-300 dark:hover:bg-slate-500 text-slate-700 dark:text-slate-200 rounded-full w-6 h-6 flex items-center justify-center text-sm"
-                    title="Menu"
-                  >
-                    ⋮
-                  </button>
-                  
-                  {/* Dropdown menu */}
-                  {openMenuFeedId === feed.id && !showCategoryPicker && (
-                    <div className="absolute right-0 mt-1 w-48 bg-white dark:bg-slate-700 rounded-lg shadow-lg border border-slate-200 dark:border-slate-600 z-10">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          handleRefreshFeed(feed.id, feed.type)
-                          setOpenMenuFeedId(null)
-                        }}
-                        disabled={refreshFeedMutation.isLoading || refreshNostrFeedMutation.isLoading}
-                        className="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600 disabled:opacity-50 rounded-t-lg"
-                      >
-                        🔄 Refresh
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          handleMarkAllAsRead(feed.id)
-                        }}
-                        disabled={markAllAsReadMutation.isLoading || feed.unreadCount === 0}
-                        className="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600 disabled:opacity-50 border-t border-slate-100 dark:border-slate-600"
-                      >
-                        ✓ Mark All as Read
-                      </button>
-                      {organizationMode === 'categories' && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            setShowCategoryPicker(feed.id)
-                          }}
-                          className="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600 border-t border-slate-100 dark:border-slate-600"
-                        >
-                          {(() => {
-                            const cat = categories?.find((c: any) => c.id === feed.categoryId)
-                            return cat 
-                              ? <span>📁 <span className="text-slate-500 dark:text-slate-400">{cat.icon || '📁'} {cat.name}</span></span>
-                              : '📁 Set Category'
-                          })()}
-                        </button>
-                      )}
-                      {organizationMode === 'tags' && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            const currentFeed = feeds.find((f: any) => f.id === feed.id)
-                            handleOpenEditMenu(feed.id, currentFeed?.tags || [])
-                          }}
-                          className="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600 border-t border-slate-100 dark:border-slate-600"
-                        >
-                          🏷️ Edit Tags
-                        </button>
-                      )}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          handleRemoveFeed(feed.id, feed.title)
-                          setOpenMenuFeedId(null)
-                        }}
-                        className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-slate-50 dark:hover:bg-slate-600 border-t border-slate-100 dark:border-slate-600 rounded-b-lg"
-                      >
-                        🗑️ Delete
-                      </button>
+                  {feed.url && (
+                    <div className="text-xs text-slate-500 dark:text-slate-400 truncate mt-1">
+                      {new URL(feed.url).hostname}
                     </div>
                   )}
-                  
-                  {/* Category Picker Dropdown */}
-                  {showCategoryPicker === feed.id && (
-                    <div className="absolute right-0 mt-1 w-56 bg-white dark:bg-slate-700 rounded-lg shadow-lg border border-slate-200 dark:border-slate-600 z-10">
-                      <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-600 flex items-center justify-between">
-                        <span className="text-sm font-medium text-slate-700 dark:text-slate-200">Set Category</span>
+                  {feed.npub && (
+                    <div className="text-xs text-slate-500 dark:text-slate-400 truncate mt-1">
+                      {feed.npub.slice(0, 16)}...
+                    </div>
+                  )}
+                  {/* Show tags if any */}
+                  {feed.tags && feed.tags.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {feed.tags.map(tag => (
+                        <span
+                          key={tag}
+                          className="inline-block px-1.5 py-0.5 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded text-[10px]"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </button>
+
+                {/* Menu button - only show for actual feeds, not "All Items" */}
+                {feed.id !== 'all' && (
+                  <div className="absolute right-2 top-2">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setOpenMenuFeedId(openMenuFeedId === feed.id ? null : feed.id)
+                      }}
+                      className="opacity-0 group-hover:opacity-100 bg-slate-200 dark:bg-slate-600 hover:bg-slate-300 dark:hover:bg-slate-500 text-slate-700 dark:text-slate-200 rounded-full w-6 h-6 flex items-center justify-center text-sm"
+                      title="Menu"
+                    >
+                      ⋮
+                    </button>
+
+                    {/* Dropdown menu */}
+                    {openMenuFeedId === feed.id && !showCategoryPicker && (
+                      <div className="absolute right-0 mt-1 w-48 bg-white dark:bg-slate-700 rounded-lg shadow-lg border border-slate-200 dark:border-slate-600 z-10">
                         <button
                           onClick={(e) => {
                             e.stopPropagation()
-                            setShowCategoryPicker(null)
+                            handleRefreshFeed(feed.id, feed.type)
                             setOpenMenuFeedId(null)
                           }}
-                          className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                          disabled={refreshFeedMutation.isLoading || refreshNostrFeedMutation.isLoading}
+                          className="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600 disabled:opacity-50 rounded-t-lg"
                         >
-                          ✕
+                          🔄 Refresh
                         </button>
-                      </div>
-                      <div className="max-h-48 overflow-y-auto">
                         <button
                           onClick={(e) => {
                             e.stopPropagation()
-                            updateCategoryMutation.mutate({ feedId: feed.id, categoryId: null })
+                            handleMarkAllAsRead(feed.id)
                           }}
-                          className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-600 flex items-center gap-2 ${
-                            !feed.categoryId ? 'bg-blue-50 dark:bg-blue-900/30' : ''
-                          }`}
+                          disabled={markAllAsReadMutation.isLoading || feed.unreadCount === 0}
+                          className="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600 disabled:opacity-50 border-t border-slate-100 dark:border-slate-600"
                         >
-                          <span className="text-base">📋</span>
-                          <span className="text-slate-700 dark:text-slate-200">No Category</span>
+                          ✓ Mark All as Read
                         </button>
-                        {categories.map((cat) => (
+                        {organizationMode === 'categories' && (
                           <button
-                            key={cat.id}
                             onClick={(e) => {
                               e.stopPropagation()
-                              updateCategoryMutation.mutate({ feedId: feed.id, categoryId: cat.id })
+                              setShowCategoryPicker(feed.id)
                             }}
-                            className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-600 flex items-center gap-2 ${
-                              feed.categoryId === cat.id ? 'bg-blue-50 dark:bg-blue-900/30' : ''
-                            }`}
+                            className="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600 border-t border-slate-100 dark:border-slate-600"
                           >
-                            <span 
-                              className="w-5 h-5 rounded flex items-center justify-center text-xs"
-                              style={{ backgroundColor: cat.color ?? '#94a3b8' }}
-                            >
-                              {cat.icon || '📁'}
-                            </span>
-                            <span className="text-slate-700 dark:text-slate-200">{cat.name}</span>
+                            {(() => {
+                              const cat = categories?.find((c: any) => c.id === feed.categoryId)
+                              return cat
+                                ? <span>📁 <span className="text-slate-500 dark:text-slate-400">{cat.icon || '📁'} {cat.name}</span></span>
+                                : '📁 Set Category'
+                            })()}
                           </button>
-                        ))}
+                        )}
+                        {organizationMode === 'tags' && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              const currentFeed = feeds.find((f: any) => f.id === feed.id)
+                              handleOpenEditMenu(feed.id, currentFeed?.tags || [])
+                            }}
+                            className="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600 border-t border-slate-100 dark:border-slate-600"
+                          >
+                            🏷️ Edit Tags
+                          </button>
+                        )}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleRemoveFeed(feed.id, feed.title)
+                            setOpenMenuFeedId(null)
+                          }}
+                          className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-slate-50 dark:hover:bg-slate-600 border-t border-slate-100 dark:border-slate-600 rounded-b-lg"
+                        >
+                          🗑️ Delete
+                        </button>
                       </div>
-                      {categories.length === 0 && (
-                        <div className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400 text-center">
-                          No categories yet. Create them in Settings.
+                    )}
+
+                    {/* Category Picker Dropdown */}
+                    {showCategoryPicker === feed.id && (
+                      <div className="absolute right-0 mt-1 w-56 bg-white dark:bg-slate-700 rounded-lg shadow-lg border border-slate-200 dark:border-slate-600 z-10">
+                        <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-600 flex items-center justify-between">
+                          <span className="text-sm font-medium text-slate-700 dark:text-slate-200">Set Category</span>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setShowCategoryPicker(null)
+                              setOpenMenuFeedId(null)
+                            }}
+                            className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                          >
+                            ✕
+                          </button>
                         </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
+                        <div className="max-h-48 overflow-y-auto">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              updateCategoryMutation.mutate({ feedId: feed.id, categoryId: null })
+                            }}
+                            className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-600 flex items-center gap-2 ${!feed.categoryId ? 'bg-blue-50 dark:bg-blue-900/30' : ''
+                              }`}
+                          >
+                            <span className="text-base">📋</span>
+                            <span className="text-slate-700 dark:text-slate-200">No Category</span>
+                          </button>
+                          {categories.map((cat) => (
+                            <button
+                              key={cat.id}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                updateCategoryMutation.mutate({ feedId: feed.id, categoryId: cat.id })
+                              }}
+                              className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-600 flex items-center gap-2 ${feed.categoryId === cat.id ? 'bg-blue-50 dark:bg-blue-900/30' : ''
+                                }`}
+                            >
+                              <span
+                                className="w-5 h-5 rounded flex items-center justify-center text-xs"
+                                style={{ backgroundColor: cat.color ?? '#94a3b8' }}
+                              >
+                                {cat.icon || '📁'}
+                              </span>
+                              <span className="text-slate-700 dark:text-slate-200">{cat.name}</span>
+                            </button>
+                          ))}
+                        </div>
+                        {categories.length === 0 && (
+                          <div className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400 text-center">
+                            No categories yet. Create them in Settings.
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         )}
 
         {/* Tags/Categories List */}
@@ -1230,28 +1279,26 @@ export function FeedReader() {
                 <div className="flex bg-slate-100 dark:bg-slate-700 rounded-md p-0.5">
                   <button
                     onClick={() => setTagSortOrder('alphabetical')}
-                    className={`px-2 py-1 text-xs rounded transition-colors ${
-                      tagSortOrder === 'alphabetical'
-                        ? 'bg-white dark:bg-slate-600 shadow-sm font-medium text-slate-900 dark:text-slate-100'
-                        : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100'
-                    }`}
+                    className={`px-2 py-1 text-xs rounded transition-colors ${tagSortOrder === 'alphabetical'
+                      ? 'bg-white dark:bg-slate-600 shadow-sm font-medium text-slate-900 dark:text-slate-100'
+                      : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100'
+                      }`}
                   >
                     A-Z
                   </button>
                   <button
                     onClick={() => setTagSortOrder('unread')}
-                    className={`px-2 py-1 text-xs rounded transition-colors ${
-                      tagSortOrder === 'unread'
-                        ? 'bg-white dark:bg-slate-600 shadow-sm font-medium text-slate-900 dark:text-slate-100'
-                        : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100'
-                    }`}
+                    className={`px-2 py-1 text-xs rounded transition-colors ${tagSortOrder === 'unread'
+                      ? 'bg-white dark:bg-slate-600 shadow-sm font-medium text-slate-900 dark:text-slate-100'
+                      : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100'
+                      }`}
                   >
                     Unread
                   </button>
                 </div>
               </div>
             )}
-            
+
             {/* Categories Mode */}
             {organizationMode === 'categories' && (
               <>
@@ -1264,9 +1311,8 @@ export function FeedReader() {
                     {/* All Items option */}
                     <button
                       onClick={() => setSelectedCategoryId(null)}
-                      className={`w-full px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-700/50 border-b border-slate-100 dark:border-slate-700 ${
-                        !selectedCategoryId ? 'bg-blue-50 dark:bg-blue-900/30 border-l-4 border-l-blue-500' : ''
-                      }`}
+                      className={`w-full px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-700/50 border-b border-slate-100 dark:border-slate-700 ${!selectedCategoryId ? 'bg-blue-50 dark:bg-blue-900/30 border-l-4 border-l-blue-500' : ''
+                        }`}
                     >
                       <div className="flex items-center justify-between">
                         <div className="flex items-center space-x-2">
@@ -1281,13 +1327,12 @@ export function FeedReader() {
                       <button
                         key={cat.id}
                         onClick={() => setSelectedCategoryId(cat.id)}
-                        className={`w-full px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-700/50 border-b border-slate-100 dark:border-slate-700 ${
-                          selectedCategoryId === cat.id ? 'bg-blue-50 dark:bg-blue-900/30 border-l-4 border-l-blue-500' : ''
-                        }`}
+                        className={`w-full px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-700/50 border-b border-slate-100 dark:border-slate-700 ${selectedCategoryId === cat.id ? 'bg-blue-50 dark:bg-blue-900/30 border-l-4 border-l-blue-500' : ''
+                          }`}
                       >
                         <div className="flex items-center justify-between">
                           <div className="flex items-center space-x-2">
-                            <span 
+                            <span
                               className="w-6 h-6 rounded flex items-center justify-center text-sm"
                               style={{ backgroundColor: cat.color ?? '#94a3b8' }}
                             >
@@ -1312,13 +1357,13 @@ export function FeedReader() {
                 )}
               </>
             )}
-            
+
             {/* Tags Mode */}
             {organizationMode === 'tags' && (
               <>
                 {filteredTags.length === 0 ? (
                   <div className="p-4 text-center text-slate-500 dark:text-slate-400 text-sm">
-                    {selectedTags.length > 0 
+                    {selectedTags.length > 0
                       ? 'No additional tags found in filtered feeds'
                       : 'No tags yet. Add tags when subscribing to feeds!'}
                   </div>
@@ -1328,9 +1373,8 @@ export function FeedReader() {
                       <button
                         key={tag}
                         onClick={() => handleToggleTag(tag)}
-                        className={`w-full px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-700/50 border-b border-slate-100 dark:border-slate-700 ${
-                          selectedTags.includes(tag) ? 'bg-blue-50 dark:bg-blue-900/30 border-l-4 border-l-blue-500' : ''
-                        }`}
+                        className={`w-full px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-700/50 border-b border-slate-100 dark:border-slate-700 ${selectedTags.includes(tag) ? 'bg-blue-50 dark:bg-blue-900/30 border-l-4 border-l-blue-500' : ''
+                          }`}
                       >
                         <div className="flex items-center justify-between">
                           <div className="flex items-center space-x-2">
@@ -1372,9 +1416,8 @@ export function FeedReader() {
               favoritesData.items.map((item: any) => (
                 <div
                   key={item.id}
-                  className={`w-full px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-700/50 border-b border-slate-100 dark:border-slate-700 ${
-                    selectedItem === item.id ? 'bg-blue-50 dark:bg-blue-900/30 border-l-4 border-l-blue-500' : ''
-                  }`}
+                  className={`w-full px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-700/50 border-b border-slate-100 dark:border-slate-700 ${selectedItem === item.id ? 'bg-blue-50 dark:bg-blue-900/30 border-l-4 border-l-blue-500' : ''
+                    }`}
                 >
                   <div className="flex items-start gap-3">
                     <button
@@ -1436,10 +1479,10 @@ export function FeedReader() {
         <div className="p-4 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
           <div className="flex items-center justify-between mb-2">
             <h2 className="font-semibold text-slate-800 dark:text-slate-100">
-              {selectedFeed === 'all' ? 'All Items' : 
-               allFeeds.find(f => f.id === selectedFeed)?.title || 'Select a feed'}
+              {selectedFeed === 'all' ? 'All Items' :
+                allFeeds.find(f => f.id === selectedFeed)?.title || 'Select a feed'}
             </h2>
-            
+
             {/* View Options Dropdown */}
             <div className="relative">
               <button
@@ -1454,7 +1497,7 @@ export function FeedReader() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
                 </svg>
               </button>
-              
+
               {/* Dropdown menu */}
               {showViewOptions && (
                 <div className="absolute right-0 mt-1 w-44 bg-white dark:bg-slate-700 rounded-lg shadow-lg border border-slate-200 dark:border-slate-600 z-10">
@@ -1466,9 +1509,8 @@ export function FeedReader() {
                         setViewFilter('all')
                         setShowViewOptions(false)
                       }}
-                      className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-600 ${
-                        viewFilter === 'all' ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' : 'text-slate-700 dark:text-slate-200'
-                      }`}
+                      className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-600 ${viewFilter === 'all' ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' : 'text-slate-700 dark:text-slate-200'
+                        }`}
                     >
                       {viewFilter === 'all' && '✓ '}All Items
                     </button>
@@ -1478,9 +1520,8 @@ export function FeedReader() {
                         setViewFilter('unread')
                         setShowViewOptions(false)
                       }}
-                      className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-600 ${
-                        viewFilter === 'unread' ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' : 'text-slate-700 dark:text-slate-200'
-                      }`}
+                      className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-600 ${viewFilter === 'unread' ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' : 'text-slate-700 dark:text-slate-200'
+                        }`}
                     >
                       {viewFilter === 'unread' && '✓ '}Unread Only
                     </button>
@@ -1490,13 +1531,12 @@ export function FeedReader() {
                         setViewFilter('read')
                         setShowViewOptions(false)
                       }}
-                      className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-600 ${
-                        viewFilter === 'read' ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' : 'text-slate-700 dark:text-slate-200'
-                      }`}
+                      className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-600 ${viewFilter === 'read' ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' : 'text-slate-700 dark:text-slate-200'
+                        }`}
                     >
                       {viewFilter === 'read' && '✓ '}Read Only
                     </button>
-                    
+
                     <div className="border-t border-slate-100 dark:border-slate-600 mt-1 pt-1">
                       <div className="px-3 py-1 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Sort</div>
                       <button
@@ -1505,9 +1545,8 @@ export function FeedReader() {
                           setSortOrder('newest')
                           setShowViewOptions(false)
                         }}
-                        className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-600 ${
-                          sortOrder === 'newest' ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' : 'text-slate-700 dark:text-slate-200'
-                        }`}
+                        className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-600 ${sortOrder === 'newest' ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' : 'text-slate-700 dark:text-slate-200'
+                          }`}
                       >
                         {sortOrder === 'newest' && '✓ '}Newest First
                       </button>
@@ -1517,9 +1556,8 @@ export function FeedReader() {
                           setSortOrder('oldest')
                           setShowViewOptions(false)
                         }}
-                        className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-600 ${
-                          sortOrder === 'oldest' ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' : 'text-slate-700 dark:text-slate-200'
-                        }`}
+                        className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-600 ${sortOrder === 'oldest' ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' : 'text-slate-700 dark:text-slate-200'
+                          }`}
                       >
                         {sortOrder === 'oldest' && '✓ '}Oldest First
                       </button>
@@ -1535,9 +1573,8 @@ export function FeedReader() {
                             handleMarkReadBehaviorChange(option.value)
                             setShowViewOptions(false)
                           }}
-                          className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-600 ${
-                            markReadBehavior === option.value ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' : 'text-slate-700 dark:text-slate-200'
-                          }`}
+                          className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-600 ${markReadBehavior === option.value ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' : 'text-slate-700 dark:text-slate-200'
+                            }`}
                         >
                           <div className="flex flex-col text-left">
                             <span>{markReadBehavior === option.value ? '✓ ' : ''}{option.label}</span>
@@ -1551,7 +1588,7 @@ export function FeedReader() {
               )}
             </div>
           </div>
-          
+
           <div className="text-sm text-slate-600 dark:text-slate-400">
             {allFeedItems.filter(item => !item.isRead).length} unread
             {viewFilter !== 'all' && (
@@ -1582,9 +1619,8 @@ export function FeedReader() {
             feedItems.map((item) => (
               <div
                 key={item.id}
-                className={`relative w-full text-left border-b border-slate-100 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 ${
-                  selectedItem === item.id ? 'bg-blue-50 dark:bg-blue-900/30 border-l-4 border-l-blue-500' : ''
-                } ${item.isRead ? 'opacity-70' : ''}`}
+                className={`relative w-full text-left border-b border-slate-100 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 ${selectedItem === item.id ? 'bg-blue-50 dark:bg-blue-900/30 border-l-4 border-l-blue-500' : ''
+                  } ${item.isRead ? 'opacity-70' : ''}`}
               >
                 <button
                   onClick={() => {
@@ -1646,7 +1682,7 @@ export function FeedReader() {
             </svg>
           </button>
         )}
-        
+
         {selectedItemData ? (
           <>
             <div className="p-6 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">{/* Fixed header */}
@@ -1698,7 +1734,7 @@ export function FeedReader() {
                     <a
                       href={selectedItemOriginalUrl}
                       target="_blank"
-                      rel="noopener noreferrer" 
+                      rel="noopener noreferrer"
                       className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
                     >
                       {selectedItemData.feedType === 'NOSTR' || selectedItemData.feedType === 'NOSTR_VIDEO' ? 'View on Nostr' : 'View Original'}
@@ -1709,7 +1745,7 @@ export function FeedReader() {
             </div>
             <div className="flex-1 overflow-y-auto bg-slate-50 dark:bg-slate-800/50">
               <div className="max-w-3xl mx-auto p-8">
-                <FormattedContent 
+                <FormattedContent
                   content={selectedItemData.content}
                   embedUrl={selectedItemData.embedUrl ?? undefined}
                   thumbnail={selectedItemData.thumbnail ?? undefined}
@@ -1751,10 +1787,10 @@ export function FeedReader() {
         onChangeMarkReadBehavior={handleMarkReadBehaviorChange}
         organizationMode={organizationMode}
         onChangeOrganizationMode={handleOrganizationModeChange}
-        feeds={feeds.map((f) => ({ 
-          type: f.type, 
-          url: f.url || f.npub || '', 
-          tags: f.tags 
+        feeds={feeds.map((f) => ({
+          type: f.type,
+          url: f.url || f.npub || '',
+          tags: f.tags
         }))}
         userPubkey={user?.npub || user?.pubkey}
         onImportFeeds={handleImportFeeds}
@@ -1811,7 +1847,7 @@ export function FeedReader() {
             <div className="p-6 border-b border-slate-200 dark:border-slate-700">
               <h2 className="text-xl font-semibold text-slate-800 dark:text-slate-100">Edit Tags</h2>
             </div>
-            
+
             <div className="p-6 flex-1 overflow-y-auto">
               <div className="mb-4">
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
@@ -1840,7 +1876,7 @@ export function FeedReader() {
                   </button>
                 </div>
               </div>
-              
+
               {editTags.length > 0 && (
                 <div className="flex flex-wrap gap-2">
                   {editTags.map((tag) => (
