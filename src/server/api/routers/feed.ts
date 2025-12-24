@@ -58,6 +58,128 @@ const buildNostrOriginalUrl = (feedType: FeedType, guid?: string | null, authorN
   }
 }
 
+const refreshAllUserFeedsInternal = async (db: any, userPubkey: string, force = false) => {
+  // 1. Get all active subscriptions for this user
+  const subscriptions = await db.subscription.findMany({
+    where: { userPubkey: userPubkey },
+    include: { feed: true },
+  })
+
+  // 2. Identify unique active feeds that need refreshing
+  const feedsToRefresh = subscriptions
+    .map((s: any) => s.feed)
+    .filter((f: any) => f.isActive)
+
+  // Deduplicate by feed ID to avoid double-processing
+  const uniqueFeeds = Array.from(new Map(feedsToRefresh.map((f: any) => [f.id, f])).values())
+
+  const results = {
+    total: uniqueFeeds.length,
+    refreshed: 0,
+    newItems: 0,
+    errors: [] as string[],
+  }
+
+  if (uniqueFeeds.length === 0) return results
+
+  // 3. Process feeds with a concurrency limit to prevent resource exhaustion
+  const CONCURRENCY_LIMIT = 5
+  // Throttle individual feed fetches: don't hit the same feed more than once every 5 minutes globally
+  const GLOBAL_REFRESH_COOLDOWN_MS = 5 * 60 * 1000
+
+  for (let i = 0; i < uniqueFeeds.length; i += CONCURRENCY_LIMIT) {
+    const chunk = uniqueFeeds.slice(i, i + CONCURRENCY_LIMIT)
+
+    await Promise.all(chunk.map(async (feed: any) => {
+      try {
+        // Global cooldown check: skip if recently fetched by ANY user (unless forced)
+        const now = new Date()
+        const isCooldownActive = feed.lastFetchedAt && (now.getTime() - feed.lastFetchedAt.getTime() < GLOBAL_REFRESH_COOLDOWN_MS)
+        if (isCooldownActive && !force) {
+          results.refreshed++
+          return
+        }
+
+        let fetchedItems: any[] = []
+
+        // A. Handle RSS Feeds
+        if (feed.type === 'RSS' && feed.url) {
+          const parsedFeed = await fetchAndParseFeed(feed.url)
+          fetchedItems = parsedFeed.items.map((item: any) => ({
+            feedId: feed.id,
+            title: item.title || 'Untitled',
+            content: item.content || '',
+            author: item.author,
+            publishedAt: item.publishedAt,
+            url: item.url || null,
+            guid: item.guid || item.url || null,
+            videoId: item.videoId,
+            embedUrl: item.embedUrl,
+            thumbnail: item.thumbnail,
+          }))
+        }
+        // B. Handle Nostr Feeds
+        else if ((feed.type === 'NOSTR' || feed.type === 'NOSTR_VIDEO') && feed.npub) {
+          const nostrFetcher = getNostrFetcher()
+          if (feed.type === 'NOSTR') {
+            const posts = await nostrFetcher.fetchLongFormPosts(feed.npub, 50, feed.lastFetchedAt || undefined)
+            fetchedItems = posts.map((post: any) => ({
+              feedId: feed.id,
+              title: post.title || 'Untitled',
+              content: post.content || '',
+              author: post.author,
+              publishedAt: post.publishedAt,
+              url: post.url || null,
+              guid: post.id, // Event ID as GUID
+            }))
+          } else {
+            const videos = await nostrFetcher.fetchVideoEvents(feed.npub, 50, feed.lastFetchedAt || undefined)
+            fetchedItems = videos.map((video: any) => ({
+              feedId: feed.id,
+              title: video.title || 'Untitled Video',
+              content: video.content || '',
+              author: video.author,
+              publishedAt: video.publishedAt,
+              url: video.videoUrl || null,
+              guid: video.id, // Event ID as GUID
+              embedUrl: video.embedUrl,
+              thumbnail: video.thumbnail,
+            }))
+          }
+        }
+
+        // 4. Update feed metadata (timestamp)
+        await db.feed.update({
+          where: { id: feed.id },
+          data: { lastFetchedAt: new Date() },
+        })
+
+        // 5. Bulk insert new items
+        if (fetchedItems.length > 0) {
+          // Filter out items without a GUID (Prisma requirement for unique constraint)
+          const validItems = fetchedItems.filter((item: any) => item.guid)
+
+          if (validItems.length > 0) {
+            const created = await db.feedItem.createMany({
+              data: validItems,
+              skipDuplicates: true,
+            })
+            results.newItems += created.count
+          }
+        }
+
+        results.refreshed++
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : 'Unknown error'
+        results.errors.push(`Failed to refresh ${feed.title || feed.id}: ${errorMsg}`)
+        console.error(`❌ Sync error for feed ${feed.id}:`, error)
+      }
+    }))
+  }
+
+  return results
+}
+
 export const feedRouter = createTRPCRouter({
   // Update user's Nostr relays
   updateNostrRelays: protectedProcedure
@@ -84,6 +206,7 @@ export const feedRouter = createTRPCRouter({
       tags: z.array(z.string()).optional(),
       categoryId: z.string().optional(),
       autoSync: z.boolean().default(true),
+      forceSync: z.boolean().optional(),
     }).optional())
     .query(async ({ ctx, input }) => {
       // 1. Check for automatic sync if enabled
@@ -94,11 +217,12 @@ export const feedRouter = createTRPCRouter({
             where: { userPubkey: ctx.nostrPubkey },
           })
 
-          // Only sync if never synced or synced more than 1 hour ago
+          // Only sync if never synced, synced more than 15 minutes ago, or forced
           const lastSync = prefs?.updatedAt
-          const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000)
+          const SYNC_INTERVAL = 15 * 60 * 1000 // 15 minutes
+          const syncThreshold = new Date(Date.now() - SYNC_INTERVAL)
 
-          if (!lastSync || lastSync < oneHourAgo) {
+          if (!lastSync || lastSync < syncThreshold || input?.forceSync === true) {
             console.log(`🔄 Auto-sync: Checking for updates for user ${ctx.nostrPubkey}`)
 
             const relays = getSyncRelaysFromServer(prefs?.nostrRelays)
@@ -206,6 +330,12 @@ export const feedRouter = createTRPCRouter({
                 create: { userPubkey: ctx.nostrPubkey },
                 update: { updatedAt: new Date() },
               })
+
+              // Also trigger a refresh of feed contents if forced or on sync
+              await refreshAllUserFeedsInternal(ctx.db, ctx.nostrPubkey)
+            } else if (input?.forceSync === true) {
+              // Even if Nostr sync wasn't needed, if forced, refresh feed contents
+              await refreshAllUserFeedsInternal(ctx.db, ctx.nostrPubkey)
             }
           }
         } catch (e) {
@@ -1339,133 +1469,9 @@ export const feedRouter = createTRPCRouter({
 
   // Refresh all user's feeds at once
   refreshAllFeeds: protectedProcedure
-    .mutation(async ({ ctx }) => {
-      // Get all user's subscriptions
-      const subscriptions = await ctx.db.subscription.findMany({
-        where: { userPubkey: ctx.nostrPubkey },
-        include: { feed: true },
-      })
-
-      const results = {
-        total: subscriptions.length,
-        refreshed: 0,
-        newItems: 0,
-        errors: [] as string[],
-      }
-
-      for (const sub of subscriptions) {
-        const feed = sub.feed
-        try {
-          if (feed.type === 'RSS' && feed.url) {
-            // Refresh RSS feed
-            const parsedFeed = await fetchAndParseFeed(feed.url)
-
-            await ctx.db.feed.update({
-              where: { id: feed.id },
-              data: { lastFetchedAt: new Date() },
-            })
-
-            for (const item of parsedFeed.items) {
-              const existingItem = await ctx.db.feedItem.findFirst({
-                where: {
-                  feedId: feed.id,
-                  OR: [
-                    { url: item.url },
-                    { guid: item.guid },
-                  ].filter(c => c.url || c.guid),
-                },
-              })
-
-              if (!existingItem) {
-                await ctx.db.feedItem.create({
-                  data: {
-                    feedId: feed.id,
-                    title: item.title,
-                    content: item.content,
-                    author: item.author,
-                    publishedAt: item.publishedAt,
-                    url: item.url,
-                    guid: item.guid,
-                    videoId: item.videoId,
-                    embedUrl: item.embedUrl,
-                    thumbnail: item.thumbnail,
-                  },
-                })
-                results.newItems++
-              }
-            }
-            results.refreshed++
-          } else if ((feed.type === 'NOSTR' || feed.type === 'NOSTR_VIDEO') && feed.npub) {
-            // Refresh Nostr feed
-            const nostrFetcher = getNostrFetcher()
-            const lastFetched = feed.lastFetchedAt
-
-            let posts: any[] = []
-            let videos: any[] = []
-
-            if (feed.type === 'NOSTR') {
-              posts = await nostrFetcher.fetchLongFormPosts(feed.npub, 50, lastFetched || undefined)
-            } else {
-              videos = await nostrFetcher.fetchVideoEvents(feed.npub, 50, lastFetched || undefined)
-            }
-
-            await ctx.db.feed.update({
-              where: { id: feed.id },
-              data: { lastFetchedAt: new Date() },
-            })
-
-            for (const post of posts) {
-              const existingItem = await ctx.db.feedItem.findFirst({
-                where: { feedId: feed.id, guid: post.id },
-              })
-
-              if (!existingItem) {
-                await ctx.db.feedItem.create({
-                  data: {
-                    feedId: feed.id,
-                    title: post.title,
-                    content: post.content,
-                    author: post.author,
-                    publishedAt: post.publishedAt,
-                    url: post.url,
-                    guid: post.id,
-                  },
-                })
-                results.newItems++
-              }
-            }
-
-            for (const video of videos) {
-              const existingItem = await ctx.db.feedItem.findFirst({
-                where: { feedId: feed.id, guid: video.id },
-              })
-
-              if (!existingItem) {
-                await ctx.db.feedItem.create({
-                  data: {
-                    feedId: feed.id,
-                    title: video.title,
-                    content: video.content,
-                    author: video.author,
-                    publishedAt: video.publishedAt,
-                    url: video.videoUrl,
-                    guid: video.id,
-                    embedUrl: video.embedUrl,
-                    thumbnail: video.thumbnail,
-                  },
-                })
-                results.newItems++
-              }
-            }
-            results.refreshed++
-          }
-        } catch (error) {
-          results.errors.push(`Failed to refresh ${feed.title}: ${error instanceof Error ? error.message : 'Unknown error'}`)
-          console.error(`Error refreshing feed ${feed.id}:`, error)
-        }
-      }
-
-      return results
+    .input(z.object({ force: z.boolean().optional() }).optional())
+    .mutation(async ({ ctx, input }) => {
+      return await refreshAllUserFeedsInternal(ctx.db, ctx.nostrPubkey, input?.force ?? true)
     }),
 
   // ==================== CATEGORIES ====================

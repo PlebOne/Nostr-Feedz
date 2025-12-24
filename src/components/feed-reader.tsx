@@ -211,9 +211,9 @@ export function FeedReader() {
       if (hasCheckedSyncRef.current || !user?.npub || !isFeedsFetched || isFeedsLoading) return
       hasCheckedSyncRef.current = true
 
-      // Skip if synced recently (within last hour)
+      // Skip if synced recently (within last 15 minutes)
       const lastSync = getLastSyncTime()
-      if (lastSync && Date.now() / 1000 - lastSync < 3600) return
+      if (lastSync && Date.now() / 1000 - lastSync < 900) return
 
       try {
         const result = await fetchSubscriptionList(user.npub)

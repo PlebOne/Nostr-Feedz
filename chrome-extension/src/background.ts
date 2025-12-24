@@ -135,14 +135,15 @@ async function fetchWithAuth<T>(
 async function fetchFeeds(
   settings: ExtensionSettings,
   authToken: string | null,
-  nostrAuth: NostrAuthData | null = null
+  nostrAuth: NostrAuthData | null = null,
+  forceSync = false
 ): Promise<Feed[]> {
   const baseUrl = sanitizeUrl(settings.webAppUrl);
   if (!baseUrl) {
     throw new Error('Invalid web app URL');
   }
   // tRPC with superjson expects input wrapped in {"json": ...}
-  const input = JSON.stringify({ json: {} });
+  const input = JSON.stringify({ json: { forceSync } });
   const url = `${baseUrl}/api/trpc/feed.getFeeds?input=${encodeURIComponent(input)}`;
 
   try {
@@ -307,8 +308,8 @@ async function showBatchNotification(count: number, feedTitle?: string): Promise
   setTimeout(() => notificationDataCache.delete(notificationId), 60000);
 }
 
-async function refreshFeeds(): Promise<{ newItemCount: number; error?: string }> {
-  console.log('Starting feed refresh...');
+async function refreshFeeds(forceSync = false): Promise<{ newItemCount: number; error?: string }> {
+  console.log(`Starting feed refresh (forceSync: ${forceSync})...`);
 
   try {
     const storage = await getStorageData();
@@ -321,7 +322,7 @@ async function refreshFeeds(): Promise<{ newItemCount: number; error?: string }>
     }
 
     const [feeds, items] = await Promise.all([
-      fetchFeeds(settings, authToken, nostrAuth),
+      fetchFeeds(settings, authToken, nostrAuth, forceSync),
       fetchNewItems(settings, authToken, nostrAuth, 50),
     ]);
 
@@ -382,13 +383,29 @@ async function setupAlarm(): Promise<void> {
   console.log(`Alarm set with ${periodInMinutes} minute interval`);
 }
 
+let lastManualRefreshTime = 0;
+const MANUAL_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
+
 async function handleMessage(
-  message: { type: string; [key: string]: unknown },
+  message: { type: string;[key: string]: unknown },
   sender: chrome.runtime.MessageSender
 ): Promise<MessageResponse> {
   switch (message.type) {
     case 'REFRESH_FEEDS': {
-      const result = await refreshFeeds();
+      const forceSync = message['forceSync'] as boolean | undefined;
+      const now = Date.now();
+
+      // If forceSync is requested, check cooldown unless explicitly overridden
+      if (forceSync !== false && (now - lastManualRefreshTime < MANUAL_REFRESH_COOLDOWN_MS)) {
+        console.log('Refresh cooldown active, skipping sync');
+        return { success: true, data: { newItemCount: 0, note: 'Cooldown active' } };
+      }
+
+      if (forceSync !== false) {
+        lastManualRefreshTime = now;
+      }
+
+      const result = await refreshFeeds(forceSync ?? true);
       const response: MessageResponse = {
         success: !result.error,
         data: { newItemCount: result.newItemCount },
@@ -766,7 +783,7 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  handleMessage(message as { type: string; [key: string]: unknown }, sender)
+  handleMessage(message as { type: string;[key: string]: unknown }, sender)
     .then(sendResponse)
     .catch((error: unknown) => {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
