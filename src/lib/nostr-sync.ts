@@ -97,8 +97,6 @@ export async function publishSubscriptionList(
     // Wait for at least one relay to accept (use Promise.race as fallback)
     await Promise.race(publishPromises)
 
-    console.log('Published subscription list to Nostr:', signedEvent.id)
-
     return { success: true, eventId: signedEvent.id }
   } catch (error) {
     console.error('Failed to publish subscription list:', error)
@@ -303,19 +301,12 @@ export function mergeSubscriptionLists(
       .map(f => normalizeNpub(f.url))
   )
 
-  console.log('🔍 Sync merge - Local RSS URLs (normalized):', Array.from(localRssUrls))
-  console.log('🔍 Sync merge - Local Nostr npubs (normalized):', Array.from(localNpubs))
-  console.log('🔍 Sync merge - Remote RSS URLs:', remoteList.rss)
-  console.log('🔍 Sync merge - Remote Nostr npubs:', remoteList.nostr)
-
   const toAdd: Array<{ type: 'RSS' | 'NOSTR'; url: string; tags?: string[] }> = []
 
   // Check RSS feeds
   for (const rssUrl of remoteList.rss) {
     const normalizedRemoteUrl = normalizeUrlForComparison(rssUrl)
     const exists = localRssUrls.has(normalizedRemoteUrl)
-
-    console.log(`🔍 RSS check: "${rssUrl}" -> normalized: "${normalizedRemoteUrl}" -> exists: ${exists}`)
 
     if (!exists) {
       toAdd.push({
@@ -330,8 +321,6 @@ export function mergeSubscriptionLists(
   for (const npub of remoteList.nostr) {
     const normalizedRemoteNpub = normalizeNpub(npub)
     const exists = localNpubs.has(normalizedRemoteNpub)
-
-    console.log(`🔍 Nostr check: "${npub}" -> normalized: "${normalizedRemoteNpub}" -> exists: ${exists}`)
 
     if (!exists) {
       toAdd.push({
@@ -355,8 +344,6 @@ export function mergeSubscriptionLists(
       return !remoteNpubsNormalized.has(normalizeNpub(f.url))
     }
   })
-
-  console.log(`🔍 Sync result: ${toAdd.length} to add, ${localOnly.length} local-only`)
 
   return { toAdd, localOnly }
 }

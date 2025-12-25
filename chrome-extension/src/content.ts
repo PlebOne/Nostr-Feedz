@@ -309,7 +309,7 @@ async function syncWithAccount(feed: LocalFeed): Promise<void> {
       headers['x-nostr-pubkey'] = nostrAuth.pubkey;
     }
 
-    const response = await fetch(url, {
+    await fetch(url, {
       method: 'POST',
       headers,
       credentials: 'include',
@@ -321,10 +321,6 @@ async function syncWithAccount(feed: LocalFeed): Promise<void> {
         },
       }),
     });
-
-    if (response.ok) {
-      console.log('Feed synced with account');
-    }
   } catch (err) {
     console.error('Failed to sync with account:', err);
   }
@@ -388,7 +384,6 @@ function init(): void {
   const feeds = detectFeeds();
 
   if (feeds.length > 0) {
-    console.log(`Nostr Feedz: Found ${feeds.length} feed(s)`, feeds);
     createFloatingButton(feeds);
   }
 }

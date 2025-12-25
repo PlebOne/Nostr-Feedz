@@ -315,8 +315,6 @@ async function loadCachedData(): Promise<{ feeds: Feed[]; items: FeedItem[] }> {
 }
 
 async function refreshFeeds(forceSync = false): Promise<{ newItemCount: number; error?: string }> {
-  console.log(`Starting feed refresh (forceSync: ${forceSync})...`);
-
   const storage = await getStorageData();
   const { settings, authToken, seenItemIds, nostrAuth } = storage;
 
@@ -381,7 +379,6 @@ async function refreshFeeds(forceSync = false): Promise<{ newItemCount: number; 
     });
     await chrome.storage.local.set({ recentItems });
 
-    console.log(`Feed refresh complete. ${newItems.length} new items, ${totalUnread} total unread`);
     return { newItemCount: newItems.length };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -410,8 +407,6 @@ async function setupAlarm(): Promise<void> {
     delayInMinutes: 1,
     periodInMinutes,
   });
-
-  console.log(`Alarm set with ${periodInMinutes} minute interval`);
 }
 
 let lastManualRefreshTime = 0;
@@ -426,9 +421,7 @@ async function handleMessage(
       const forceSync = message['forceSync'] as boolean | undefined;
       const now = Date.now();
 
-      // If forceSync is requested, check cooldown unless explicitly overridden
       if (forceSync !== false && (now - lastManualRefreshTime < MANUAL_REFRESH_COOLDOWN_MS)) {
-        console.log('Refresh cooldown active, skipping sync');
         return { success: true, data: { newItemCount: 0, note: 'Cooldown active' } };
       }
 
@@ -751,7 +744,6 @@ async function addFeedToStorage(feedUrl: string, feedTitle: string): Promise<boo
             },
           }),
         });
-        console.log('Feed synced with account');
       } catch (err) {
         console.error('Failed to sync feed with account:', err);
       }
@@ -810,8 +802,6 @@ function updateContextMenuForTab(tabId: number, feeds: DetectedFeed[]): void {
 }
 
 chrome.runtime.onInstalled.addListener((details) => {
-  console.log('Extension installed:', details.reason);
-
   void (async () => {
     if (details.reason === 'install') {
       await saveStorageData({
@@ -829,7 +819,6 @@ chrome.runtime.onInstalled.addListener((details) => {
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  console.log('Extension startup');
   void setupAlarm();
   void refreshFeeds();
 });
@@ -846,7 +835,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM_NAME) {
-    console.log('Alarm triggered, refreshing feeds...');
     void refreshFeeds();
   }
 });
@@ -918,10 +906,8 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName === 'local' && changes['authToken']) {
     const newToken = changes['authToken'].newValue as string | null;
     if (newToken) {
-      console.log('Auth token updated, refreshing feeds...');
       void refreshFeeds();
     } else {
-      console.log('Auth token cleared');
       updateBadge(0);
     }
   }
@@ -1001,7 +987,6 @@ void (async () => {
     const now = Date.now();
     const shouldRefresh = !lastSync || (now - new Date(lastSync).getTime()) >= intervalMs;
     if (shouldRefresh) {
-      console.log('Auto-refresh triggered on service worker wake-up');
       void refreshFeeds();
     }
   }

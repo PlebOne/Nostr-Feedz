@@ -223,8 +223,6 @@ export const feedRouter = createTRPCRouter({
           const syncThreshold = new Date(Date.now() - SYNC_INTERVAL)
 
           if (!lastSync || lastSync < syncThreshold || input?.forceSync === true) {
-            console.log(`🔄 Auto-sync: Checking for updates for user ${ctx.nostrPubkey}`)
-
             const relays = getSyncRelaysFromServer(prefs?.nostrRelays)
             const remoteResult = await fetchSubscriptionListFromServer(ctx.nostrPubkey, relays)
 
@@ -265,8 +263,6 @@ export const feedRouter = createTRPCRouter({
               }
 
               if (feedsToAdd.length > 0) {
-                console.log(`🔄 Auto-sync: Found ${feedsToAdd.length} new feeds to add`)
-
                 for (const feed of feedsToAdd) {
                   try {
                     let feedUrl = feed.url
@@ -411,9 +407,6 @@ export const feedRouter = createTRPCRouter({
       cursor: z.string().optional(),
     }))
     .query(async ({ ctx, input }) => {
-      // Log raw input for debugging intermittent 500s
-      console.log('🔍 getFeedItems input (raw):', JSON.stringify(input))
-
       const whereClause: any = {}
 
       // Sanitize feedIds to guard against deserialization quirks (e.g. ['undefined'])
@@ -438,10 +431,6 @@ export const feedRouter = createTRPCRouter({
         }
 
         if (derivedFeedIds.length === 0) {
-          console.warn('⚠️ No feed IDs available for user, returning empty feed list', {
-            user: ctx.nostrPubkey,
-            input,
-          })
           return {
             items: [],
             nextCursor: undefined,
@@ -557,7 +546,6 @@ export const feedRouter = createTRPCRouter({
 
       // For RSS feeds, try to discover the actual feed URL
       if (input.type === 'RSS' && feedUrl) {
-        console.log('Discovering feed at:', feedUrl)
         const discovery = await discoverFeed(feedUrl)
 
         if (!discovery.found) {
@@ -578,8 +566,6 @@ export const feedRouter = createTRPCRouter({
         } else {
           feedTitle = discovery.title || input.title || new URL(discovery.feedUrl!).hostname
         }
-
-        console.log('Feed discovered:', { feedUrl, feedTitle, type: discovery.type })
       }
 
       // Check if feed already exists
