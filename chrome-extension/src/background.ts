@@ -15,6 +15,8 @@ import {
   encodeNpub,
   generateAuthHeader,
 } from './nostr';
+import { withRetry } from './utils/retry';
+import { feedDatabase } from './db/feedDatabase';
 
 const ALARM_NAME = 'refresh-feeds';
 const DEFAULT_POLL_INTERVAL = 5;
@@ -142,11 +144,10 @@ async function fetchFeeds(
   if (!baseUrl) {
     throw new Error('Invalid web app URL');
   }
-  // tRPC with superjson expects input wrapped in {"json": ...}
   const input = JSON.stringify({ json: { forceSync } });
   const url = `${baseUrl}/api/trpc/feed.getFeeds?input=${encodeURIComponent(input)}`;
 
-  try {
+  return withRetry(async () => {
     const response = await fetchWithAuth<{ result: { data: { json: FeedsResponse[] } } }>(
       url,
       authToken,
@@ -154,10 +155,7 @@ async function fetchFeeds(
       nostrAuth
     );
     return response.result.data.json;
-  } catch (error) {
-    console.error('Failed to fetch feeds:', error);
-    throw error;
-  }
+  });
 }
 
 async function fetchNewItems(
@@ -170,11 +168,10 @@ async function fetchNewItems(
   if (!baseUrl) {
     throw new Error('Invalid web app URL');
   }
-  // tRPC with superjson expects input wrapped in {"json": ...}
   const input = JSON.stringify({ json: { limit } });
   const url = `${baseUrl}/api/trpc/feed.getFeedItems?input=${encodeURIComponent(input)}`;
 
-  try {
+  return withRetry(async () => {
     const response = await fetchWithAuth<{ result: { data: { json: FeedItemsResponse } } }>(
       url,
       authToken,
@@ -182,10 +179,7 @@ async function fetchNewItems(
       nostrAuth
     );
     return response.result.data.json.items;
-  } catch (error) {
-    console.error('Failed to fetch feed items:', error);
-    throw error;
-  }
+  });
 }
 
 async function markItemAsRead(itemId: string): Promise<void> {
@@ -308,22 +302,48 @@ async function showBatchNotification(count: number, feedTitle?: string): Promise
   setTimeout(() => notificationDataCache.delete(notificationId), 60000);
 }
 
+async function loadCachedData(): Promise<{ feeds: Feed[]; items: FeedItem[] }> {
+  try {
+    const [feeds, items] = await Promise.all([
+      feedDatabase.getFeeds(),
+      feedDatabase.getItems({ limit: 100 }),
+    ]);
+    return { feeds, items };
+  } catch {
+    return { feeds: [], items: [] };
+  }
+}
+
 async function refreshFeeds(forceSync = false): Promise<{ newItemCount: number; error?: string }> {
   console.log(`Starting feed refresh (forceSync: ${forceSync})...`);
 
-  try {
-    const storage = await getStorageData();
-    const { settings, authToken, seenItemIds, nostrAuth } = storage;
+  const storage = await getStorageData();
+  const { settings, authToken, seenItemIds, nostrAuth } = storage;
 
-    const hasAuth = authToken || (nostrAuth?.pubkey && nostrAuth.method !== 'none');
-    if (!hasAuth) {
-      console.log('No auth, skipping refresh');
-      return { newItemCount: 0, error: 'Not authenticated' };
+  const hasAuth = authToken || (nostrAuth?.pubkey && nostrAuth.method !== 'none');
+  if (!hasAuth) {
+    const cached = await loadCachedData();
+    if (cached.feeds.length > 0) {
+      const totalUnread = cached.feeds.reduce((sum, feed) => sum + feed.unreadCount, 0);
+      updateBadge(totalUnread);
+      await chrome.storage.local.set({
+        feeds: cached.feeds,
+        recentItems: cached.items.slice(0, 50).map(item => ({ ...item, feedId: '' })),
+      });
     }
+    return { newItemCount: 0, error: 'Not authenticated' };
+  }
 
+  try {
     const [feeds, items] = await Promise.all([
       fetchFeeds(settings, authToken, nostrAuth, forceSync),
       fetchNewItems(settings, authToken, nostrAuth, 50),
+    ]);
+
+    await Promise.all([
+      feedDatabase.saveFeeds(feeds),
+      feedDatabase.saveItems(items),
+      feedDatabase.clearOldItems(),
     ]);
 
     const seenSet = new Set(seenItemIds);
@@ -365,7 +385,18 @@ async function refreshFeeds(forceSync = false): Promise<{ newItemCount: number; 
     return { newItemCount: newItems.length };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('Feed refresh failed:', errorMessage);
+    console.error('Feed refresh failed, using cache:', errorMessage);
+
+    const cached = await loadCachedData();
+    if (cached.feeds.length > 0) {
+      const totalUnread = cached.feeds.reduce((sum, feed) => sum + feed.unreadCount, 0);
+      updateBadge(totalUnread);
+      await chrome.storage.local.set({
+        feeds: cached.feeds,
+        recentItems: cached.items.slice(0, 50).map(item => ({ ...item, feedId: '' })),
+      });
+    }
+
     return { newItemCount: 0, error: errorMessage };
   }
 }
@@ -546,7 +577,10 @@ async function handleMessage(
         return { success: false, error: 'Missing itemId' };
       }
       try {
-        await markItemAsRead(itemId);
+        await Promise.all([
+          markItemAsRead(itemId),
+          feedDatabase.markItemRead(itemId),
+        ]);
         const result = await chrome.storage.local.get(['recentItems', 'feeds']);
         const recentItems = (result['recentItems'] as any[] | undefined) ?? [];
         const feeds = (result['feeds'] as Feed[] | undefined) ?? [];

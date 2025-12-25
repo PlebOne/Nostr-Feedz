@@ -1,6 +1,10 @@
 import { StrictMode, useState, useEffect, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Feed, FeedItem, ExtensionSettings, ThemeMode } from './types';
+import { ConnectionStatus } from './components/ConnectionStatus';
+import { ItemSkeleton } from './components/Skeleton';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { VirtualList } from './components/VirtualList';
 
 const DEFAULT_WEB_APP_URL = 'https://nostrfeedz.com';
 
@@ -72,6 +76,7 @@ function App() {
   const [recentItems, setRecentItems] = useState<RecentItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [syncError, setSyncError] = useState(false);
   const [webAppUrl, setWebAppUrl] = useState(DEFAULT_WEB_APP_URL);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(null);
@@ -199,11 +204,16 @@ function App() {
 
   const handleRefresh = async () => {
     setRefreshing(true);
+    setSyncError(false);
     try {
-      await chrome.runtime.sendMessage({ type: 'REFRESH_FEEDS' });
+      const response = await chrome.runtime.sendMessage({ type: 'REFRESH_FEEDS' });
+      if (response?.error) {
+        setSyncError(true);
+      }
       await loadData();
     } catch (err) {
       console.error('Failed to refresh:', err);
+      setSyncError(true);
     } finally {
       setRefreshing(false);
     }
@@ -295,7 +305,20 @@ function App() {
   const themeIcon = theme === 'light' ? '☀️' : theme === 'dark' ? '🌙' : '🖥️';
 
   if (loading) {
-    return <div className="container"><div className="loading">Loading...</div></div>;
+    return (
+      <div className="container">
+        <header className="header">
+          <h1>Nostr Feedz</h1>
+        </header>
+        <div className="content-area">
+          <ItemSkeleton />
+          <ItemSkeleton />
+          <ItemSkeleton />
+          <ItemSkeleton />
+          <ItemSkeleton />
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -304,10 +327,12 @@ function App() {
         <h1>Nostr Feedz</h1>
         {totalUnread > 0 && <span className="badge total-badge">{totalUnread}</span>}
         <div className="header-actions">
+          <ConnectionStatus isSyncing={refreshing} hasError={syncError} />
           <button
             className="icon-btn"
             onClick={handleCycleTheme}
             title={`Theme: ${theme}`}
+            aria-label={`Theme: ${theme}`}
           >
             {themeIcon}
           </button>
@@ -356,9 +381,25 @@ function App() {
               <p>{showUnreadOnly ? 'All caught up!' : 'No recent items'}</p>
               <p className="hint">New items will appear here</p>
             </div>
+          ) : displayedItems.length > 20 ? (
+            <VirtualList
+              items={displayedItems}
+              itemHeight={58}
+              containerHeight={280}
+              className="item-list"
+              renderItem={(item, index) => (
+                <ItemRow
+                  key={item.id}
+                  item={item}
+                  isSelected={selectedIndex === index}
+                  onOpen={() => handleOpenItem(item)}
+                  onMarkRead={() => void handleMarkRead(item.id)}
+                />
+              )}
+            />
           ) : (
             <div className="item-list">
-              {displayedItems.slice(0, 15).map((item, index) => (
+              {displayedItems.map((item, index) => (
                 <ItemRow
                   key={item.id}
                   item={item}
@@ -461,7 +502,9 @@ const root = document.getElementById('root');
 if (root) {
   createRoot(root).render(
     <StrictMode>
-      <App />
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
     </StrictMode>
   );
 }
