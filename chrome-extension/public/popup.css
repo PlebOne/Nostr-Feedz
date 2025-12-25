@@ -645,8 +645,15 @@ body {
 .item-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   flex-shrink: 0;
+}
+
+.item-actions .unread-dot {
+  position: relative;
+  right: auto;
+  top: auto;
+  transform: none;
 }
 
 .item-action-btn {
