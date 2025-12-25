@@ -387,7 +387,7 @@ let lastManualRefreshTime = 0;
 const MANUAL_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
 
 async function handleMessage(
-  message: { type: string;[key: string]: unknown },
+  message: { type: string; [key: string]: unknown },
   sender: chrome.runtime.MessageSender
 ): Promise<MessageResponse> {
   switch (message.type) {
@@ -547,12 +547,30 @@ async function handleMessage(
       }
       try {
         await markItemAsRead(itemId);
-        const result = await chrome.storage.local.get(['recentItems']);
+        const result = await chrome.storage.local.get(['recentItems', 'feeds']);
         const recentItems = (result['recentItems'] as any[] | undefined) ?? [];
-        const updatedItems = recentItems.map(item =>
-          item.id === itemId ? { ...item, isRead: true } : item
+        const feeds = (result['feeds'] as Feed[] | undefined) ?? [];
+
+        const item = recentItems.find((i) => i.id === itemId);
+        const wasUnread = item && !item.isRead;
+
+        const updatedItems = recentItems.map((i) =>
+          i.id === itemId ? { ...i, isRead: true } : i
         );
-        await chrome.storage.local.set({ recentItems: updatedItems });
+
+        if (wasUnread && item?.feedTitle) {
+          const updatedFeeds = feeds.map((feed) =>
+            feed.title === item.feedTitle && feed.unreadCount > 0
+              ? { ...feed, unreadCount: feed.unreadCount - 1 }
+              : feed
+          );
+          await chrome.storage.local.set({ recentItems: updatedItems, feeds: updatedFeeds });
+          const totalUnread = updatedFeeds.reduce((sum, feed) => sum + feed.unreadCount, 0);
+          updateBadge(totalUnread);
+        } else {
+          await chrome.storage.local.set({ recentItems: updatedItems });
+        }
+
         return { success: true };
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Failed to mark as read';
@@ -783,7 +801,7 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  handleMessage(message as { type: string;[key: string]: unknown }, sender)
+  handleMessage(message as { type: string; [key: string]: unknown }, sender)
     .then(sendResponse)
     .catch((error: unknown) => {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -917,7 +935,6 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === MENU_ID_PAGE_FEEDS && tab?.id) {
     const feeds = tabFeeds.get(tab.id);
     if (feeds && feeds.length > 0) {
-      // If only one feed, add it directly; otherwise add first one
       const feed = feeds[0];
       if (feed) {
         void addFeedToStorage(feed.url, feed.title);
@@ -929,8 +946,20 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (url && isLikelyFeedUrl(url)) {
       void addFeedToStorage(url, title);
     } else if (url) {
-      // Try to add it anyway - let the user decide
       void addFeedToStorage(url, title || new URL(url).hostname);
     }
   }
 });
+
+void (async () => {
+  const alarm = await chrome.alarms.get(ALARM_NAME);
+  if (!alarm) {
+    await setupAlarm();
+  }
+  const storage = await getStorageData();
+  const hasAuth = storage.authToken || (storage.nostrAuth?.pubkey && storage.nostrAuth.method !== 'none');
+  if (hasAuth) {
+    const totalUnread = storage.feeds.reduce((sum, feed) => sum + feed.unreadCount, 0);
+    updateBadge(totalUnread);
+  }
+})();

@@ -224,10 +224,24 @@ function App() {
 
   const handleMarkRead = async (itemId: string) => {
     try {
+      const item = recentItems.find((i) => i.id === itemId);
+      const wasUnread = item && !item.isRead;
+
       await chrome.runtime.sendMessage({ type: 'MARK_ITEM_READ', itemId });
-      setRecentItems(prev => prev.map(item =>
-        item.id === itemId ? { ...item, isRead: true } : item
-      ));
+
+      setRecentItems((prev) =>
+        prev.map((i) => (i.id === itemId ? { ...i, isRead: true } : i))
+      );
+
+      if (wasUnread && item?.feedTitle) {
+        setFeeds((prev) =>
+          prev.map((feed) =>
+            feed.title === item.feedTitle && feed.unreadCount > 0
+              ? { ...feed, unreadCount: feed.unreadCount - 1 }
+              : feed
+          )
+        );
+      }
     } catch (err) {
       console.error('Failed to mark as read:', err);
     }
