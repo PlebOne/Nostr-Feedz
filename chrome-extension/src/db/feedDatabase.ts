@@ -1,7 +1,7 @@
-import type { Feed, FeedItem } from '../types';
+import type { Feed, FeedItem, ReadLaterItem, Folder } from '../types';
 
 const DB_NAME = 'nostr-feedz-cache';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 interface CachedItem extends FeedItem {
   cachedAt: number;
@@ -38,6 +38,15 @@ class FeedDatabase {
           const itemStore = db.createObjectStore('items', { keyPath: 'id' });
           itemStore.createIndex('publishedAt', 'publishedAt', { unique: false });
           itemStore.createIndex('isRead', 'isRead', { unique: false });
+        }
+
+        if (!db.objectStoreNames.contains('readLater')) {
+          const readLaterStore = db.createObjectStore('readLater', { keyPath: 'itemId' });
+          readLaterStore.createIndex('addedAt', 'addedAt', { unique: false });
+        }
+
+        if (!db.objectStoreNames.contains('folders')) {
+          db.createObjectStore('folders', { keyPath: 'id' });
         }
       };
     });
@@ -140,6 +149,142 @@ class FeedDatabase {
           cursor.continue();
         }
       };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async searchItems(query: string, limit: number = 50): Promise<FeedItem[]> {
+    const items = await this.getItems({ limit: 500 });
+    const lowerQuery = query.toLowerCase();
+    return items
+      .filter(
+        (item) =>
+          item.title.toLowerCase().includes(lowerQuery) ||
+          item.feedTitle.toLowerCase().includes(lowerQuery) ||
+          item.content?.toLowerCase().includes(lowerQuery)
+      )
+      .slice(0, limit);
+  }
+
+  async getReadLaterItems(): Promise<ReadLaterItem[]> {
+    await this.init();
+    return new Promise((resolve, reject) => {
+      const tx = this.db!.transaction('readLater', 'readonly');
+      const store = tx.objectStore('readLater');
+      const index = store.index('addedAt');
+      const request = index.getAll();
+      request.onsuccess = () => resolve(request.result ?? []);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async addToReadLater(item: FeedItem): Promise<void> {
+    await this.init();
+    return new Promise((resolve, reject) => {
+      const tx = this.db!.transaction('readLater', 'readwrite');
+      const store = tx.objectStore('readLater');
+      const readLaterItem: ReadLaterItem = {
+        itemId: item.id,
+        addedAt: new Date().toISOString(),
+        item,
+      };
+      store.put(readLaterItem);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async removeFromReadLater(itemId: string): Promise<void> {
+    await this.init();
+    return new Promise((resolve, reject) => {
+      const tx = this.db!.transaction('readLater', 'readwrite');
+      const store = tx.objectStore('readLater');
+      store.delete(itemId);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async isInReadLater(itemId: string): Promise<boolean> {
+    await this.init();
+    return new Promise((resolve, reject) => {
+      const tx = this.db!.transaction('readLater', 'readonly');
+      const store = tx.objectStore('readLater');
+      const request = store.get(itemId);
+      request.onsuccess = () => resolve(!!request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async getFolders(): Promise<Folder[]> {
+    await this.init();
+    return new Promise((resolve, reject) => {
+      const tx = this.db!.transaction('folders', 'readonly');
+      const store = tx.objectStore('folders');
+      const request = store.getAll();
+      request.onsuccess = () => resolve(request.result ?? []);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async saveFolder(folder: Folder): Promise<void> {
+    await this.init();
+    return new Promise((resolve, reject) => {
+      const tx = this.db!.transaction('folders', 'readwrite');
+      const store = tx.objectStore('folders');
+      store.put(folder);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async deleteFolder(folderId: string): Promise<void> {
+    await this.init();
+    return new Promise((resolve, reject) => {
+      const tx = this.db!.transaction('folders', 'readwrite');
+      const store = tx.objectStore('folders');
+      store.delete(folderId);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async getReadingStats(): Promise<{ totalRead: number; readToday: number; readThisWeek: number; topFeeds: { feedTitle: string; count: number }[] }> {
+    const items = await this.getItems({ limit: 1000 });
+    const todayStart = new Date().setHours(0, 0, 0, 0);
+    const weekStart = todayStart - 6 * 24 * 60 * 60 * 1000;
+
+    const readItems = items.filter((item) => item.isRead);
+    const readToday = readItems.filter((item) => new Date(item.publishedAt).getTime() >= todayStart).length;
+    const readThisWeek = readItems.filter((item) => new Date(item.publishedAt).getTime() >= weekStart).length;
+
+    const feedCounts = new Map<string, number>();
+    readItems.forEach((item) => {
+      feedCounts.set(item.feedTitle, (feedCounts.get(item.feedTitle) ?? 0) + 1);
+    });
+
+    const topFeeds = Array.from(feedCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([feedTitle, count]) => ({ feedTitle, count }));
+
+    return { totalRead: readItems.length, readToday, readThisWeek, topFeeds };
+  }
+
+  async markItemsRead(itemIds: string[]): Promise<void> {
+    await this.init();
+    return new Promise((resolve, reject) => {
+      const tx = this.db!.transaction('items', 'readwrite');
+      const store = tx.objectStore('items');
+      itemIds.forEach((itemId) => {
+        const request = store.get(itemId);
+        request.onsuccess = () => {
+          if (request.result) {
+            store.put({ ...request.result, isRead: true });
+          }
+        };
+      });
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });

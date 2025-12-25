@@ -1,10 +1,14 @@
 import { StrictMode, useState, useEffect, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { Feed, FeedItem, ExtensionSettings, ThemeMode } from './types';
+import type { Feed, FeedItem, ExtensionSettings, ThemeMode, ReadLaterItem } from './types';
 import { ConnectionStatus } from './components/ConnectionStatus';
 import { ItemSkeleton } from './components/Skeleton';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { VirtualList } from './components/VirtualList';
+import { SearchBar } from './components/SearchBar';
+import { Statistics } from './components/Statistics';
+import { BulkActions } from './components/BulkActions';
+import { feedDatabase } from './db/feedDatabase';
 
 const DEFAULT_WEB_APP_URL = 'https://nostrfeedz.com';
 
@@ -29,26 +33,47 @@ function formatTimeAgo(dateStr: string): string {
 function ItemRow({
   item,
   isSelected,
+  isChecked,
   onOpen,
-  onMarkRead
+  onMarkRead,
+  onToggleSelect,
+  onReadLater,
+  showCheckbox = false
 }: {
   item: RecentItem;
   isSelected: boolean;
+  isChecked?: boolean;
   onOpen: () => void;
   onMarkRead: () => void;
+  onToggleSelect?: () => void;
+  onReadLater?: () => void;
+  showCheckbox?: boolean;
 }) {
   const typeIcon = item.feedType === 'RSS' ? '📰' : item.feedType === 'NOSTR_VIDEO' ? '🎬' : '📝';
 
   return (
     <div
-      className={`item-row ${isSelected ? 'selected' : ''} ${item.isRead ? 'read' : ''}`}
+      className={`item-row ${isSelected ? 'selected' : ''} ${item.isRead ? 'read' : ''} ${isChecked ? 'checked' : ''}`}
       onClick={onOpen}
       tabIndex={0}
       onKeyDown={(e) => {
         if (e.key === 'Enter') onOpen();
         if (e.key === 'm' || e.key === 'M') onMarkRead();
+        if (e.key === 's' || e.key === 'S') onReadLater?.();
       }}
     >
+      {showCheckbox && (
+        <input
+          type="checkbox"
+          className="item-checkbox"
+          checked={isChecked}
+          onChange={(e) => {
+            e.stopPropagation();
+            onToggleSelect?.();
+          }}
+          onClick={(e) => e.stopPropagation()}
+        />
+      )}
       <span className="item-icon">{typeIcon}</span>
       <div className="item-content">
         <div className="item-title">{item.title}</div>
@@ -57,16 +82,30 @@ function ItemRow({
           <span className="item-time">{formatTimeAgo(item.publishedAt)}</span>
         </div>
       </div>
-      {!item.isRead && (
-        <span
-          className="unread-dot"
-          onClick={(e) => {
-            e.stopPropagation();
-            onMarkRead();
-          }}
-          title="Mark as read"
-        />
-      )}
+      <div className="item-actions">
+        {onReadLater && (
+          <button
+            className="item-action-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              onReadLater();
+            }}
+            title="Save for later"
+          >
+            🔖
+          </button>
+        )}
+        {!item.isRead && (
+          <span
+            className="unread-dot"
+            onClick={(e) => {
+              e.stopPropagation();
+              onMarkRead();
+            }}
+            title="Mark as read"
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -83,8 +122,12 @@ function App() {
   const [theme, setTheme] = useState<ThemeMode>('system');
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(-1);
-  const [view, setView] = useState<'items' | 'feeds'>('items');
+  const [view, setView] = useState<'items' | 'feeds' | 'readLater'>('items');
   const [expandedFeeds, setExpandedFeeds] = useState<Set<string>>(new Set());
+  const [searchResults, setSearchResults] = useState<RecentItem[] | null>(null);
+  const [readLaterItems, setReadLaterItems] = useState<ReadLaterItem[]>([]);
+  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+  const [showStats, setShowStats] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const toggleFeedExpanded = (feedId: string) => {
@@ -284,6 +327,80 @@ function App() {
     }
   };
 
+  const handleSearch = useCallback(async (query: string) => {
+    try {
+      const results = await feedDatabase.searchItems(query);
+      setSearchResults(results as RecentItem[]);
+    } catch (err) {
+      console.error('Search failed:', err);
+    }
+  }, []);
+
+  const handleClearSearch = useCallback(() => {
+    setSearchResults(null);
+  }, []);
+
+  const loadReadLater = useCallback(async () => {
+    try {
+      const items = await feedDatabase.getReadLaterItems();
+      setReadLaterItems(items);
+    } catch (err) {
+      console.error('Failed to load read later items:', err);
+    }
+  }, []);
+
+  const handleAddToReadLater = async (item: RecentItem) => {
+    try {
+      await feedDatabase.addToReadLater(item);
+      await loadReadLater();
+    } catch (err) {
+      console.error('Failed to add to read later:', err);
+    }
+  };
+
+  const handleRemoveFromReadLater = async (itemId: string) => {
+    try {
+      await feedDatabase.removeFromReadLater(itemId);
+      await loadReadLater();
+    } catch (err) {
+      console.error('Failed to remove from read later:', err);
+    }
+  };
+
+  const handleToggleSelect = (itemId: string) => {
+    setSelectedItems(prev => {
+      const next = new Set(prev);
+      if (next.has(itemId)) {
+        next.delete(itemId);
+      } else {
+        next.add(itemId);
+      }
+      return next;
+    });
+  };
+
+  const handleClearSelection = () => {
+    setSelectedItems(new Set());
+  };
+
+  const handleBulkMarkRead = async () => {
+    try {
+      const itemIds = Array.from(selectedItems);
+      await feedDatabase.markItemsRead(itemIds);
+      await Promise.all(itemIds.map(id => chrome.runtime.sendMessage({ type: 'MARK_ITEM_READ', itemId: id })));
+      setRecentItems(prev => prev.map(i => selectedItems.has(i.id) ? { ...i, isRead: true } : i));
+      setSelectedItems(new Set());
+    } catch (err) {
+      console.error('Failed to bulk mark as read:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (view === 'readLater') {
+      void loadReadLater();
+    }
+  }, [view, loadReadLater]);
+
   const totalUnread = feeds.reduce((sum, feed) => sum + feed.unreadCount, 0);
   const displayedItems = showUnreadOnly
     ? recentItems.filter(item => !item.isRead)
@@ -346,6 +463,14 @@ function App() {
       )}
 
       <div className="toolbar">
+        <SearchBar
+          onSearch={handleSearch}
+          onClear={handleClearSearch}
+          placeholder="Search items..."
+        />
+      </div>
+
+      <div className="toolbar">
         <div className="view-tabs">
           <button
             className={`tab ${view === 'items' ? 'active' : ''}`}
@@ -359,6 +484,12 @@ function App() {
           >
             Feeds
           </button>
+          <button
+            className={`tab ${view === 'readLater' ? 'active' : ''}`}
+            onClick={() => setView('readLater')}
+          >
+            Saved {readLaterItems.length > 0 && <span className="tab-count">{readLaterItems.length}</span>}
+          </button>
         </div>
         <button
           className={`filter-btn ${showUnreadOnly ? 'active' : ''}`}
@@ -369,12 +500,63 @@ function App() {
         </button>
       </div>
 
+      {selectedItems.size > 0 && (
+        <BulkActions
+          selectedCount={selectedItems.size}
+          onMarkRead={() => void handleBulkMarkRead()}
+          onClearSelection={handleClearSelection}
+        />
+      )}
+
       <div className="content-area">
         {!isAuthenticated ? (
           <div className="empty-state">
             <p>Not signed in</p>
             <p className="hint">Open the app to sign in with Nostr</p>
           </div>
+        ) : searchResults !== null ? (
+          searchResults.length === 0 ? (
+            <div className="empty-state">
+              <p>No results found</p>
+              <p className="hint">Try a different search term</p>
+            </div>
+          ) : (
+            <div className="item-list">
+              {searchResults.map((item, index) => (
+                <ItemRow
+                  key={item.id}
+                  item={item}
+                  isSelected={selectedIndex === index}
+                  isChecked={selectedItems.has(item.id)}
+                  showCheckbox={selectedItems.size > 0}
+                  onOpen={() => handleOpenItem(item)}
+                  onMarkRead={() => void handleMarkRead(item.id)}
+                  onToggleSelect={() => handleToggleSelect(item.id)}
+                  onReadLater={() => void handleAddToReadLater(item)}
+                />
+              ))}
+            </div>
+          )
+        ) : view === 'readLater' ? (
+          readLaterItems.length === 0 ? (
+            <div className="empty-state">
+              <p>No saved items</p>
+              <p className="hint">Click 🔖 to save items for later</p>
+            </div>
+          ) : (
+            <div className="item-list">
+              {readLaterItems.map((rlItem, index) => (
+                <ItemRow
+                  key={rlItem.itemId}
+                  item={rlItem.item as RecentItem}
+                  isSelected={selectedIndex === index}
+                  onOpen={() => handleOpenItem(rlItem.item as RecentItem)}
+                  onMarkRead={() => void handleMarkRead(rlItem.itemId)}
+                  onReadLater={() => void handleRemoveFromReadLater(rlItem.itemId)}
+                />
+              ))}
+            </div>
+          )
         ) : view === 'items' ? (
           displayedItems.length === 0 ? (
             <div className="empty-state">
@@ -392,8 +574,12 @@ function App() {
                   key={item.id}
                   item={item}
                   isSelected={selectedIndex === index}
+                  isChecked={selectedItems.has(item.id)}
+                  showCheckbox={selectedItems.size > 0}
                   onOpen={() => handleOpenItem(item)}
                   onMarkRead={() => void handleMarkRead(item.id)}
+                  onToggleSelect={() => handleToggleSelect(item.id)}
+                  onReadLater={() => void handleAddToReadLater(item)}
                 />
               )}
             />
@@ -404,8 +590,12 @@ function App() {
                   key={item.id}
                   item={item}
                   isSelected={selectedIndex === index}
+                  isChecked={selectedItems.has(item.id)}
+                  showCheckbox={selectedItems.size > 0}
                   onOpen={() => handleOpenItem(item)}
                   onMarkRead={() => void handleMarkRead(item.id)}
+                  onToggleSelect={() => handleToggleSelect(item.id)}
+                  onReadLater={() => void handleAddToReadLater(item)}
                 />
               ))}
             </div>
@@ -491,9 +681,14 @@ function App() {
       {isAuthenticated && (
         <footer className="footer">
           <span className="sync-status">Synced: {formatLastSync(lastSync)}</span>
+          <button className="stats-btn" onClick={() => setShowStats(true)} title="View statistics">
+            📊
+          </button>
           <span className="shortcuts-hint">j/k nav · o open · m read</span>
         </footer>
       )}
+
+      <Statistics isOpen={showStats} onClose={() => setShowStats(false)} />
     </div>
   );
 }

@@ -134,3 +134,24 @@ export interface SyncStorageData {
   localFeeds: LocalFeed[];
   syncSettings: SyncSettings;
 }
+
+export interface Folder {
+  id: string;
+  name: string;
+  color: string;
+  feedIds: string[];
+  createdAt: string;
+}
+
+export interface ReadLaterItem {
+  itemId: string;
+  addedAt: string;
+  item: FeedItem;
+}
+
+export interface ReadingStats {
+  totalRead: number;
+  readToday: number;
+  readThisWeek: number;
+  topFeeds: { feedTitle: string; count: number }[];
+}
