@@ -961,5 +961,14 @@ void (async () => {
   if (hasAuth) {
     const totalUnread = storage.feeds.reduce((sum, feed) => sum + feed.unreadCount, 0);
     updateBadge(totalUnread);
+
+    const lastSync = storage.settings.lastSyncTime;
+    const intervalMs = (storage.settings.pollIntervalMinutes || DEFAULT_POLL_INTERVAL) * 60 * 1000;
+    const now = Date.now();
+    const shouldRefresh = !lastSync || (now - new Date(lastSync).getTime()) >= intervalMs;
+    if (shouldRefresh) {
+      console.log('Auto-refresh triggered on service worker wake-up');
+      void refreshFeeds();
+    }
   }
 })();
