@@ -353,8 +353,11 @@ function App() {
 
   const handleAddToFavorites = async (item: RecentItem) => {
     try {
-      await chrome.runtime.sendMessage({ type: 'ADD_FAVORITE', itemId: item.id });
-      setFavoriteItems(prev => [{ ...item, isFavorited: true }, ...prev]);
+      const response = await chrome.runtime.sendMessage({ type: 'ADD_FAVORITE', itemId: item.id });
+      if (response.success) {
+        setFavoriteItems(prev => [{ ...item, isFavorited: true }, ...prev]);
+        setRecentItems(prev => prev.map(i => i.id === item.id ? { ...i, isFavorited: true } : i));
+      }
     } catch (err) {
       console.error('Failed to add to favorites:', err);
     }
@@ -362,8 +365,11 @@ function App() {
 
   const handleRemoveFromFavorites = async (itemId: string) => {
     try {
-      await chrome.runtime.sendMessage({ type: 'REMOVE_FAVORITE', itemId });
-      setFavoriteItems(prev => prev.filter(i => i.id !== itemId));
+      const response = await chrome.runtime.sendMessage({ type: 'REMOVE_FAVORITE', itemId });
+      if (response.success) {
+        setFavoriteItems(prev => prev.filter(i => i.id !== itemId));
+        setRecentItems(prev => prev.map(i => i.id === itemId ? { ...i, isFavorited: false } : i));
+      }
     } catch (err) {
       console.error('Failed to remove from favorites:', err);
     }
