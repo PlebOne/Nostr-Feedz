@@ -44,6 +44,8 @@ type FeedItemsResponse = RouterOutputs['feed']['getFeedItems']
 type FeedItem = FeedItemsResponse['items'][number]
 type FavoritesResponse = RouterOutputs['feed']['getFavorites']
 type FavoriteItem = FavoritesResponse['items'][number]
+type CategoriesWithUnread = RouterOutputs['feed']['getCategoriesWithUnread']
+type CategoryWithUnread = CategoriesWithUnread[number]
 
 const FAVORITES_QUERY_INPUT = { limit: 50 } as const
 const QUICK_MARK_READ_OPTIONS: { value: MarkReadBehavior; label: string; helper: string }[] = [
@@ -222,14 +224,14 @@ export function FeedReader() {
         // Check if there are new subscriptions to import
         if (result.data.rss.length === 0 && result.data.nostr.length === 0) return
 
-        const currentFeeds = feeds.map((f) => ({
+        const currentFeeds = feeds.map((f: Feed) => ({
           type: f.type,
           url: f.url || f.npub || '',
           tags: f.tags,
         }))
 
         // Debug: Log exactly what we're comparing
-        console.log('🔍 AUTO-SYNC DEBUG - feeds from DB:', feeds.map(f => ({ type: f.type, url: f.url, npub: f.npub, title: f.title })))
+        console.log('🔍 AUTO-SYNC DEBUG - feeds from DB:', feeds.map((f: Feed) => ({ type: f.type, url: f.url, npub: f.npub, title: f.title })))
         console.log('🔍 AUTO-SYNC DEBUG - currentFeeds mapped:', currentFeeds)
         console.log('🔍 AUTO-SYNC DEBUG - remote data:', result.data)
 
@@ -289,7 +291,7 @@ export function FeedReader() {
       if (!data) return data
       return {
         ...data,
-        items: data.items.map((item) =>
+        items: data.items.map((item: FeedItem) =>
           item.id === itemId ? { ...item, ...updater(item) } : item
         ),
       }
@@ -301,7 +303,7 @@ export function FeedReader() {
       if (!data) return data
       return {
         ...data,
-        items: data.items.filter((favorite) => favorite.id !== itemId),
+        items: data.items.filter((favorite: FavoriteItem) => favorite.id !== itemId),
       }
     })
   }
@@ -309,7 +311,7 @@ export function FeedReader() {
   const addFavoriteToCache = (item: FeedItem) => {
     utils.feed.getFavorites.setData(FAVORITES_QUERY_INPUT, (data) => {
       if (!data) return data
-      const alreadyExists = data.items.some(fav => fav.id === item.id)
+      const alreadyExists = data.items.some((fav: FavoriteItem) => fav.id === item.id)
       if (alreadyExists) return data
 
       const newFavorite: FavoriteItem = {
@@ -478,7 +480,7 @@ export function FeedReader() {
     if (!user?.npub || !window.nostr || feeds.length === 0) return
 
     // Create a stable representation of the current feeds for comparison
-    const feedsState = JSON.stringify(feeds.map(f => ({ url: f.url, npub: f.npub, tags: f.tags })))
+    const feedsState = JSON.stringify(feeds.map((f: Feed) => ({ url: f.url, npub: f.npub, tags: f.tags })))
 
     // Skip if nothing changed since last publish
     if (lastAutoPublishRef.current === feedsState) return
@@ -492,7 +494,7 @@ export function FeedReader() {
       try {
         console.log('🔄 Auto-publishing subscriptions to Nostr...')
 
-        const subscriptionList = buildSubscriptionListFromFeeds(feeds.map(f => ({
+        const subscriptionList = buildSubscriptionListFromFeeds(feeds.map((f: Feed) => ({
           type: f.type,
           url: f.url || f.npub || '',
           tags: f.tags,
@@ -558,9 +560,9 @@ export function FeedReader() {
       id: 'all',
       title: 'All Items',
       type: 'RSS' as const,
-      unreadCount: feedItemsData?.items.filter(item => !item.isRead).length || 0,
+      unreadCount: feedItemsData?.items.filter((item: FeedItem) => !item.isRead).length || 0,
     },
-    ...feeds.map(feed => ({
+    ...feeds.map((feed: Feed) => ({
       id: feed.id,
       title: feed.title,
       type: feed.type as 'RSS' | 'NOSTR' | 'NOSTR_VIDEO',
@@ -623,7 +625,7 @@ export function FeedReader() {
   }
 
   const selectedItemData = selectedItem
-    ? (feedItems.find(item => item.id === selectedItem) || allFeedItems.find(item => item.id === selectedItem) || null)
+    ? (feedItems.find((item: FeedItem) => item.id === selectedItem) || allFeedItems.find((item: FeedItem) => item.id === selectedItem) || null)
     : null
   const selectedItemOriginalUrl = selectedItemData?.originalUrl ?? selectedItemData?.url
   const selectedItemIsRead = selectedItemData?.isRead ?? false
@@ -671,7 +673,7 @@ export function FeedReader() {
   // Handle marking item as read when clicked
   const handleItemClick = (itemId: string) => {
     setSelectedItem(itemId)
-    const item = allFeedItems.find(i => i.id === itemId)
+    const item = allFeedItems.find((i: FeedItem) => i.id === itemId)
     if (markReadBehavior === 'on-open' && item && !item.isRead) {
       updateFeedItemCache(itemId, () => ({ isRead: true }))
       markAsReadMutation.mutate({ itemId })
@@ -694,7 +696,7 @@ export function FeedReader() {
       removeFavoriteFromCache(itemId)
       removeFavoriteMutation.mutate({ itemId })
     } else {
-      const sourceItem = allFeedItems.find(item => item.id === itemId)
+      const sourceItem = allFeedItems.find((item: FeedItem) => item.id === itemId)
       if (sourceItem) {
         addFavoriteToCache({ ...sourceItem, isFavorited: true })
       }
@@ -1235,7 +1237,7 @@ export function FeedReader() {
                             <span className="text-base">📋</span>
                             <span className="text-slate-700 dark:text-slate-200">No Category</span>
                           </button>
-                          {categories.map((cat) => (
+                          {categories.map((cat: Category) => (
                             <button
                               key={cat.id}
                               onClick={(e) => {
@@ -1323,7 +1325,7 @@ export function FeedReader() {
                         </div>
                       </div>
                     </button>
-                    {categoriesWithUnread.map((cat) => (
+                    {categoriesWithUnread.map((cat: CategoryWithUnread) => (
                       <button
                         key={cat.id}
                         onClick={() => setSelectedCategoryId(cat.id)}
@@ -1590,7 +1592,7 @@ export function FeedReader() {
           </div>
 
           <div className="text-sm text-slate-600 dark:text-slate-400">
-            {allFeedItems.filter(item => !item.isRead).length} unread
+            {allFeedItems.filter((item: FeedItem) => !item.isRead).length} unread
             {viewFilter !== 'all' && (
               <span className="ml-2 text-xs text-blue-600 dark:text-blue-400">
                 • Showing {viewFilter === 'unread' ? 'unread' : 'read'} only
@@ -1616,7 +1618,7 @@ export function FeedReader() {
               </div>
             </div>
           ) : (
-            feedItems.map((item) => (
+            feedItems.map((item: FeedItem) => (
               <div
                 key={item.id}
                 className={`relative w-full text-left border-b border-slate-100 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 ${selectedItem === item.id ? 'bg-blue-50 dark:bg-blue-900/30 border-l-4 border-l-blue-500' : ''
@@ -1787,7 +1789,7 @@ export function FeedReader() {
         onChangeMarkReadBehavior={handleMarkReadBehaviorChange}
         organizationMode={organizationMode}
         onChangeOrganizationMode={handleOrganizationModeChange}
-        feeds={feeds.map((f) => ({
+        feeds={feeds.map((f: Feed) => ({
           type: f.type,
           url: f.url || f.npub || '',
           tags: f.tags

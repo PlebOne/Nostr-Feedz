@@ -3,7 +3,7 @@ import { createTRPCRouter, protectedProcedure } from '@/server/api/trpc'
 import { fetchAndParseFeed } from '@/lib/rss-parser'
 import { getNostrFetcher, NostrFeedFetcher } from '@/lib/nostr-fetcher'
 import { discoverFeed } from '@/lib/feed-discovery'
-import { FeedType } from '@prisma/client'
+import { FeedType, type Prisma } from '@prisma/client'
 import { nip19 } from 'nostr-tools'
 import {
   fetchSubscriptionListFromServer,
@@ -11,6 +11,47 @@ import {
   normalizeUrlForComparison,
   normalizeNpub
 } from '@/lib/nostr-sync'
+
+// Type for subscription with feed include
+type SubscriptionWithFeed = Prisma.SubscriptionGetPayload<{ include: { feed: true } }>
+
+// Type for subscription with full feed details including counts
+type SubscriptionWithFeedAndCategory = Prisma.SubscriptionGetPayload<{
+  include: {
+    feed: { include: { _count: { select: { items: true } } } }
+    category: true
+  }
+}>
+
+// Type for feed item with feed
+type FeedItemWithFeedAndReads = Prisma.FeedItemGetPayload<{
+  include: {
+    feed: true
+    readItems: true
+    favorites: true
+  }
+}>
+
+// Type for favorite with feed item and feed
+type FavoriteWithFeedItem = Prisma.FavoriteGetPayload<{
+  include: { feedItem: { include: { feed: true } } }
+}>
+
+// Type for category with counts
+type CategoryWithCount = Prisma.CategoryGetPayload<{
+  include: { _count: { select: { subscriptions: true } } }
+}>
+
+// Type for category with subscriptions
+type CategoryWithSubscriptions = Prisma.CategoryGetPayload<{
+  include: {
+    subscriptions: {
+      include: {
+        feed: { include: { items: true } }
+      }
+    }
+  }
+}>
 
 // Habla.news is a dedicated long-form content viewer that handles naddr links well
 const NOSTR_ARTICLE_VIEWER_URL = 'https://habla.news'
@@ -237,14 +278,14 @@ export const feedRouter = createTRPCRouter({
 
               const localRssUrls = new Set(
                 currentSubs
-                  .filter(s => s.feed.type === 'RSS')
-                  .map(s => normalizeUrlForComparison(s.feed.url!))
+                  .filter((s: SubscriptionWithFeed) => s.feed.type === 'RSS')
+                  .map((s: SubscriptionWithFeed) => normalizeUrlForComparison(s.feed.url!))
               )
 
               const localNpubs = new Set(
                 currentSubs
-                  .filter(s => s.feed.type === 'NOSTR' || s.feed.type === 'NOSTR_VIDEO')
-                  .map(s => normalizeNpub(s.feed.npub || s.feed.url!))
+                  .filter((s: SubscriptionWithFeed) => s.feed.type === 'NOSTR' || s.feed.type === 'NOSTR_VIDEO')
+                  .map((s: SubscriptionWithFeed) => normalizeNpub(s.feed.npub || s.feed.url!))
               )
 
               // Identify new feeds from remote
@@ -339,7 +380,7 @@ export const feedRouter = createTRPCRouter({
         }
       }
 
-      const whereClause: any = {
+      const whereClause: Prisma.SubscriptionWhereInput = {
         userPubkey: ctx.nostrPubkey,
       }
 
@@ -379,7 +420,7 @@ export const feedRouter = createTRPCRouter({
         },
       })
 
-      return subscriptions.map(sub => ({
+      return subscriptions.map((sub: SubscriptionWithFeedAndCategory) => ({
         id: sub.feed.id,
         title: sub.feed.title,
         type: sub.feed.type,
@@ -407,11 +448,11 @@ export const feedRouter = createTRPCRouter({
       cursor: z.string().optional(),
     }))
     .query(async ({ ctx, input }) => {
-      const whereClause: any = {}
+      const whereClause: Prisma.FeedItemWhereInput = {}
 
       // Sanitize feedIds to guard against deserialization quirks (e.g. ['undefined'])
       const sanitizedFeedIds = Array.isArray(input.feedIds)
-        ? input.feedIds.filter(id => !!id && typeof id === 'string' && id !== 'undefined')
+        ? input.feedIds.filter((id): id is string => !!id && typeof id === 'string' && id !== 'undefined')
         : []
 
       if (input.feedId) {
@@ -427,7 +468,7 @@ export const feedRouter = createTRPCRouter({
             where: { userPubkey: ctx.nostrPubkey },
             select: { feedId: true },
           })
-          derivedFeedIds = subscriptions.map(s => s.feedId)
+          derivedFeedIds = subscriptions.map((s: { feedId: string }) => s.feedId)
         }
 
         if (derivedFeedIds.length === 0) {
@@ -482,7 +523,7 @@ export const feedRouter = createTRPCRouter({
       }
 
       try {
-        const mappedItems = items.map(item => {
+        const mappedItems = items.map((item: FeedItemWithFeedAndReads) => {
           // For NOSTR items, item.url holds the d-tag
           const originalUrl = buildNostrOriginalUrl(item.feed.type, item.guid, item.author, item.url) ?? item.url ?? undefined
 
@@ -1126,7 +1167,7 @@ export const feedRouter = createTRPCRouter({
       }
 
       return {
-        items: favorites.map(fav => ({
+        items: favorites.map((fav: FavoriteWithFeedItem) => ({
           id: fav.feedItem.id,
           title: fav.feedItem.title,
           content: fav.feedItem.content,
@@ -1160,7 +1201,7 @@ export const feedRouter = createTRPCRouter({
       })
 
       // Create read items for all unread items
-      const readItemsData = feedItems.map(item => ({
+      const readItemsData = feedItems.map((item: { id: string }) => ({
         userPubkey: ctx.nostrPubkey,
         itemId: item.id,
       }))
@@ -1475,7 +1516,7 @@ export const feedRouter = createTRPCRouter({
         orderBy: { sortOrder: 'asc' },
       })
 
-      return categories.map(cat => ({
+      return categories.map((cat: CategoryWithCount) => ({
         id: cat.id,
         name: cat.name,
         color: cat.color,
@@ -1624,13 +1665,13 @@ export const feedRouter = createTRPCRouter({
         orderBy: { sortOrder: 'asc' },
       })
 
-      return categories.map(cat => ({
+      return categories.map((cat: CategoryWithSubscriptions) => ({
         id: cat.id,
         name: cat.name,
         color: cat.color,
         icon: cat.icon,
         feedCount: cat.subscriptions.length,
-        unreadCount: cat.subscriptions.reduce((sum, sub) => sum + sub.feed.items.length, 0),
+        unreadCount: cat.subscriptions.reduce((sum: number, sub: CategoryWithSubscriptions['subscriptions'][number]) => sum + sub.feed.items.length, 0),
       }))
     }),
 
