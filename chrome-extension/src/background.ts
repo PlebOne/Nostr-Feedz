@@ -278,6 +278,8 @@ async function showNotification(item: FeedItem, webAppUrl: string): Promise<void
     ],
     priority: 1,
   });
+
+  setTimeout(() => notificationDataCache.delete(notificationId), 60000);
 }
 
 async function showBatchNotification(count: number, feedTitle?: string): Promise<void> {
@@ -523,23 +525,15 @@ async function handleMessage(
         method: string;
       } | null;
 
-      if (!session) {
-        // User logged out from web app
-        await saveStorageData({
-          nostrAuth: null,
-          feeds: [],
-          seenItemIds: [],
-        });
-        updateBadge(0);
+      if (!session || !session.pubkey) {
         return { success: true };
       }
 
-      // Sync auth from web app
       const nostrAuth: NostrAuthData = {
         method: session.method === 'nip07' ? 'nip07' : 'nsec',
         pubkey: session.pubkey,
         npub: session.npub,
-        privateKeyHex: null, // Web app doesn't share private key
+        privateKeyHex: null,
       };
 
       await saveStorageData({ nostrAuth });

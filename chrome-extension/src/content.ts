@@ -338,7 +338,6 @@ async function syncAuthFromWebApp(): Promise<void> {
 
     const sessionStr = localStorage.getItem('nostr_session');
     if (!sessionStr) {
-      await chrome.runtime.sendMessage({ type: 'SYNC_WEB_AUTH', session: null });
       return;
     }
 
