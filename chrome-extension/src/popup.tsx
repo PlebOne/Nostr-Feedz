@@ -1,6 +1,6 @@
 import { StrictMode, useState, useEffect, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { Feed, FeedItem, ExtensionSettings, ThemeMode, ReadLaterItem } from './types';
+import type { Feed, FeedItem, ExtensionSettings, ThemeMode } from './types';
 import { ConnectionStatus } from './components/ConnectionStatus';
 import { ItemSkeleton } from './components/Skeleton';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -37,7 +37,7 @@ function ItemRow({
   onOpen,
   onMarkRead,
   onToggleSelect,
-  onReadLater,
+  onFavorite,
   showCheckbox = false
 }: {
   item: RecentItem;
@@ -46,7 +46,7 @@ function ItemRow({
   onOpen: () => void;
   onMarkRead: () => void;
   onToggleSelect?: () => void;
-  onReadLater?: () => void;
+  onFavorite?: () => void;
   showCheckbox?: boolean;
 }) {
   const typeIcon = item.feedType === 'RSS' ? '📰' : item.feedType === 'NOSTR_VIDEO' ? '🎬' : '📝';
@@ -59,7 +59,7 @@ function ItemRow({
       onKeyDown={(e) => {
         if (e.key === 'Enter') onOpen();
         if (e.key === 'm' || e.key === 'M') onMarkRead();
-        if (e.key === 's' || e.key === 'S') onReadLater?.();
+        if (e.key === 'f' || e.key === 'F') onFavorite?.();
       }}
     >
       {showCheckbox && (
@@ -83,16 +83,16 @@ function ItemRow({
         </div>
       </div>
       <div className="item-actions">
-        {onReadLater && (
+        {onFavorite && (
           <button
-            className="item-action-btn"
+            className={`item-action-btn ${item.isFavorited ? 'active' : ''}`}
             onClick={(e) => {
               e.stopPropagation();
-              onReadLater();
+              onFavorite();
             }}
-            title="Save for later"
+            title={item.isFavorited ? 'Remove from favorites' : 'Add to favorites'}
           >
-            🔖
+            {item.isFavorited ? '★' : '☆'}
           </button>
         )}
         {!item.isRead && (
@@ -122,10 +122,10 @@ function App() {
   const [theme, setTheme] = useState<ThemeMode>('system');
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(-1);
-  const [view, setView] = useState<'items' | 'feeds' | 'readLater'>('items');
+  const [view, setView] = useState<'items' | 'feeds' | 'favorites'>('items');
   const [expandedFeeds, setExpandedFeeds] = useState<Set<string>>(new Set());
   const [searchResults, setSearchResults] = useState<RecentItem[] | null>(null);
-  const [readLaterItems, setReadLaterItems] = useState<ReadLaterItem[]>([]);
+  const [favoriteItems, setFavoriteItems] = useState<FeedItem[]>([]);
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [showStats, setShowStats] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -340,30 +340,32 @@ function App() {
     setSearchResults(null);
   }, []);
 
-  const loadReadLater = useCallback(async () => {
+  const loadFavorites = useCallback(async () => {
     try {
-      const items = await feedDatabase.getReadLaterItems();
-      setReadLaterItems(items);
+      const response = await chrome.runtime.sendMessage({ type: 'GET_FAVORITES' });
+      if (response.success && response.data?.items) {
+        setFavoriteItems(response.data.items);
+      }
     } catch (err) {
-      console.error('Failed to load read later items:', err);
+      console.error('Failed to load favorites:', err);
     }
   }, []);
 
-  const handleAddToReadLater = async (item: RecentItem) => {
+  const handleAddToFavorites = async (item: RecentItem) => {
     try {
-      await feedDatabase.addToReadLater(item);
-      await loadReadLater();
+      await chrome.runtime.sendMessage({ type: 'ADD_FAVORITE', itemId: item.id });
+      setFavoriteItems(prev => [{ ...item, isFavorited: true }, ...prev]);
     } catch (err) {
-      console.error('Failed to add to read later:', err);
+      console.error('Failed to add to favorites:', err);
     }
   };
 
-  const handleRemoveFromReadLater = async (itemId: string) => {
+  const handleRemoveFromFavorites = async (itemId: string) => {
     try {
-      await feedDatabase.removeFromReadLater(itemId);
-      await loadReadLater();
+      await chrome.runtime.sendMessage({ type: 'REMOVE_FAVORITE', itemId });
+      setFavoriteItems(prev => prev.filter(i => i.id !== itemId));
     } catch (err) {
-      console.error('Failed to remove from read later:', err);
+      console.error('Failed to remove from favorites:', err);
     }
   };
 
@@ -396,10 +398,10 @@ function App() {
   };
 
   useEffect(() => {
-    if (view === 'readLater') {
-      void loadReadLater();
+    if (view === 'favorites') {
+      void loadFavorites();
     }
-  }, [view, loadReadLater]);
+  }, [view, loadFavorites]);
 
   const totalUnread = feeds.reduce((sum, feed) => sum + feed.unreadCount, 0);
   const displayedItems = showUnreadOnly
@@ -485,10 +487,10 @@ function App() {
             Feeds
           </button>
           <button
-            className={`tab ${view === 'readLater' ? 'active' : ''}`}
-            onClick={() => setView('readLater')}
+            className={`tab ${view === 'favorites' ? 'active' : ''}`}
+            onClick={() => setView('favorites')}
           >
-            Saved {readLaterItems.length > 0 && <span className="tab-count">{readLaterItems.length}</span>}
+            Favorites {favoriteItems.length > 0 && <span className="tab-count">{favoriteItems.length}</span>}
           </button>
         </div>
         <button
@@ -532,27 +534,27 @@ function App() {
                   onOpen={() => handleOpenItem(item)}
                   onMarkRead={() => void handleMarkRead(item.id)}
                   onToggleSelect={() => handleToggleSelect(item.id)}
-                  onReadLater={() => void handleAddToReadLater(item)}
+                  onFavorite={() => void handleAddToFavorites(item)}
                 />
               ))}
             </div>
           )
-        ) : view === 'readLater' ? (
-          readLaterItems.length === 0 ? (
+        ) : view === 'favorites' ? (
+          favoriteItems.length === 0 ? (
             <div className="empty-state">
-              <p>No saved items</p>
-              <p className="hint">Click 🔖 to save items for later</p>
+              <p>No favorites</p>
+              <p className="hint">Click ★ to add items to favorites</p>
             </div>
           ) : (
             <div className="item-list">
-              {readLaterItems.map((rlItem, index) => (
+              {favoriteItems.map((favItem, index) => (
                 <ItemRow
-                  key={rlItem.itemId}
-                  item={rlItem.item as RecentItem}
+                  key={favItem.id}
+                  item={favItem as RecentItem}
                   isSelected={selectedIndex === index}
-                  onOpen={() => handleOpenItem(rlItem.item as RecentItem)}
-                  onMarkRead={() => void handleMarkRead(rlItem.itemId)}
-                  onReadLater={() => void handleRemoveFromReadLater(rlItem.itemId)}
+                  onOpen={() => handleOpenItem(favItem as RecentItem)}
+                  onMarkRead={() => void handleMarkRead(favItem.id)}
+                  onFavorite={() => void handleRemoveFromFavorites(favItem.id)}
                 />
               ))}
             </div>
@@ -579,7 +581,7 @@ function App() {
                   onOpen={() => handleOpenItem(item)}
                   onMarkRead={() => void handleMarkRead(item.id)}
                   onToggleSelect={() => handleToggleSelect(item.id)}
-                  onReadLater={() => void handleAddToReadLater(item)}
+                  onFavorite={() => void handleAddToFavorites(item)}
                 />
               )}
             />
@@ -595,7 +597,7 @@ function App() {
                   onOpen={() => handleOpenItem(item)}
                   onMarkRead={() => void handleMarkRead(item.id)}
                   onToggleSelect={() => handleToggleSelect(item.id)}
-                  onReadLater={() => void handleAddToReadLater(item)}
+                  onFavorite={() => void handleAddToFavorites(item)}
                 />
               ))}
             </div>

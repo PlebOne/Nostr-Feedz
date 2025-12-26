@@ -251,6 +251,96 @@ async function markAllAsRead(): Promise<void> {
   await refreshFeeds();
 }
 
+async function addFavorite(itemId: string): Promise<void> {
+  const storage = await getStorageData();
+  const { settings, authToken, nostrAuth } = storage;
+
+  const hasAuth = authToken || (nostrAuth?.pubkey && nostrAuth.method !== 'none');
+  if (!hasAuth) return;
+
+  const baseUrl = sanitizeUrl(settings.webAppUrl);
+  if (!baseUrl) return;
+  const url = `${baseUrl}/api/trpc/feed.addFavorite`;
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+
+  if (authToken) {
+    headers['Authorization'] = `Bearer ${authToken}`;
+  } else if (nostrAuth && nostrAuth.pubkey) {
+    headers['x-nostr-pubkey'] = nostrAuth.pubkey;
+    const nostrHeader = await getNostrAuthHeader(url, 'POST', nostrAuth);
+    if (nostrHeader) {
+      headers['Authorization'] = nostrHeader;
+    }
+  }
+
+  await fetch(url, {
+    method: 'POST',
+    headers,
+    credentials: 'include',
+    body: JSON.stringify({ json: { itemId } }),
+  });
+}
+
+async function removeFavorite(itemId: string): Promise<void> {
+  const storage = await getStorageData();
+  const { settings, authToken, nostrAuth } = storage;
+
+  const hasAuth = authToken || (nostrAuth?.pubkey && nostrAuth.method !== 'none');
+  if (!hasAuth) return;
+
+  const baseUrl = sanitizeUrl(settings.webAppUrl);
+  if (!baseUrl) return;
+  const url = `${baseUrl}/api/trpc/feed.removeFavorite`;
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+
+  if (authToken) {
+    headers['Authorization'] = `Bearer ${authToken}`;
+  } else if (nostrAuth && nostrAuth.pubkey) {
+    headers['x-nostr-pubkey'] = nostrAuth.pubkey;
+    const nostrHeader = await getNostrAuthHeader(url, 'POST', nostrAuth);
+    if (nostrHeader) {
+      headers['Authorization'] = nostrHeader;
+    }
+  }
+
+  await fetch(url, {
+    method: 'POST',
+    headers,
+    credentials: 'include',
+    body: JSON.stringify({ json: { itemId } }),
+  });
+}
+
+async function fetchFavorites(
+  settings: ExtensionSettings,
+  authToken: string | null,
+  nostrAuth: NostrAuthData | null = null
+): Promise<FeedItem[]> {
+  const baseUrl = sanitizeUrl(settings.webAppUrl);
+  if (!baseUrl) {
+    throw new Error('Invalid web app URL');
+  }
+
+  const input = JSON.stringify({ json: { limit: 50 } });
+  const url = `${baseUrl}/api/trpc/feed.getFavorites?input=${encodeURIComponent(input)}`;
+
+  return withRetry(async () => {
+    const response = await fetchWithAuth<{ result: { data: { json: { items: FeedItem[] } } } }>(
+      url,
+      authToken,
+      {},
+      nostrAuth
+    );
+    return response.result.data.json.items;
+  });
+}
+
 function updateBadge(count: number): void {
   const text = count > 0 ? (count > 99 ? '99+' : String(count)) : '';
   void chrome.action.setBadgeText({ text });
@@ -596,6 +686,50 @@ async function handleMessage(
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Failed to mark as read';
         return { success: false, error: errorMessage };
+      }
+    }
+
+    case 'ADD_FAVORITE': {
+      const itemId = message['itemId'] as string;
+      if (!itemId) {
+        return { success: false, error: 'Missing itemId' };
+      }
+      try {
+        await addFavorite(itemId);
+        return { success: true };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Failed to add favorite';
+        return { success: false, error: errorMessage };
+      }
+    }
+
+    case 'REMOVE_FAVORITE': {
+      const itemId = message['itemId'] as string;
+      if (!itemId) {
+        return { success: false, error: 'Missing itemId' };
+      }
+      try {
+        await removeFavorite(itemId);
+        return { success: true };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Failed to remove favorite';
+        return { success: false, error: errorMessage };
+      }
+    }
+
+    case 'GET_FAVORITES': {
+      try {
+        const storage = await getStorageData();
+        const { settings, authToken, nostrAuth } = storage;
+        const hasAuth = authToken || (nostrAuth?.pubkey && nostrAuth.method !== 'none');
+        if (!hasAuth) {
+          return { success: true, data: { items: [] } };
+        }
+        const items = await fetchFavorites(settings, authToken, nostrAuth);
+        return { success: true, data: { items } };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Failed to get favorites';
+        return { success: false, error: errorMessage, data: { items: [] } };
       }
     }
 

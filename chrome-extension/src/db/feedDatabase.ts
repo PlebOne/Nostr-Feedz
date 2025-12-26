@@ -1,4 +1,4 @@
-import type { Feed, FeedItem, ReadLaterItem, Folder } from '../types';
+import type { Feed, FeedItem, Folder } from '../types';
 
 const DB_NAME = 'nostr-feedz-cache';
 const DB_VERSION = 2;
@@ -165,56 +165,6 @@ class FeedDatabase {
           item.content?.toLowerCase().includes(lowerQuery)
       )
       .slice(0, limit);
-  }
-
-  async getReadLaterItems(): Promise<ReadLaterItem[]> {
-    await this.init();
-    return new Promise((resolve, reject) => {
-      const tx = this.db!.transaction('readLater', 'readonly');
-      const store = tx.objectStore('readLater');
-      const index = store.index('addedAt');
-      const request = index.getAll();
-      request.onsuccess = () => resolve(request.result ?? []);
-      request.onerror = () => reject(request.error);
-    });
-  }
-
-  async addToReadLater(item: FeedItem): Promise<void> {
-    await this.init();
-    return new Promise((resolve, reject) => {
-      const tx = this.db!.transaction('readLater', 'readwrite');
-      const store = tx.objectStore('readLater');
-      const readLaterItem: ReadLaterItem = {
-        itemId: item.id,
-        addedAt: new Date().toISOString(),
-        item,
-      };
-      store.put(readLaterItem);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  }
-
-  async removeFromReadLater(itemId: string): Promise<void> {
-    await this.init();
-    return new Promise((resolve, reject) => {
-      const tx = this.db!.transaction('readLater', 'readwrite');
-      const store = tx.objectStore('readLater');
-      store.delete(itemId);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  }
-
-  async isInReadLater(itemId: string): Promise<boolean> {
-    await this.init();
-    return new Promise((resolve, reject) => {
-      const tx = this.db!.transaction('readLater', 'readonly');
-      const store = tx.objectStore('readLater');
-      const request = store.get(itemId);
-      request.onsuccess = () => resolve(!!request.result);
-      request.onerror = () => reject(request.error);
-    });
   }
 
   async getFolders(): Promise<Folder[]> {

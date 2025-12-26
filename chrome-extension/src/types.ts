@@ -143,12 +143,6 @@ export interface Folder {
   createdAt: string;
 }
 
-export interface ReadLaterItem {
-  itemId: string;
-  addedAt: string;
-  item: FeedItem;
-}
-
 export interface ReadingStats {
   totalRead: number;
   readToday: number;
