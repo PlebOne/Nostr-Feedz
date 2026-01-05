@@ -116,6 +116,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [syncError, setSyncError] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'success' | 'error'>('idle');
   const [webAppUrl, setWebAppUrl] = useState(DEFAULT_WEB_APP_URL);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(null);
@@ -128,7 +129,10 @@ function App() {
   const [favoriteItems, setFavoriteItems] = useState<FeedItem[]>([]);
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [showStats, setShowStats] = useState(false);
+  const [isOffline, setIsOffline] = useState(!navigator.onLine);
+  const [pollIntervalMinutes, setPollIntervalMinutes] = useState(5);
   const containerRef = useRef<HTMLDivElement>(null);
+  const syncStatusTimeoutRef = useRef<number | null>(null);
 
   const toggleFeedExpanded = (feedId: string) => {
     setExpandedFeeds(prev => {
@@ -170,6 +174,7 @@ function App() {
       setWebAppUrl(settings?.webAppUrl ?? DEFAULT_WEB_APP_URL);
       setIsAuthenticated(!!authToken || !!nostrAuth?.pubkey);
       setLastSync(settings?.lastSyncTime ?? null);
+      setPollIntervalMinutes(settings?.pollIntervalMinutes ?? 5);
       setTheme(settings?.theme ?? 'system');
       setShowUnreadOnly(settings?.showUnreadOnly ?? false);
       applyTheme(settings?.theme ?? 'system');
@@ -198,6 +203,25 @@ function App() {
     mediaQuery.addEventListener('change', handleChange);
     return () => mediaQuery.removeEventListener('change', handleChange);
   }, [applyTheme, theme]);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (syncStatusTimeoutRef.current) {
+        clearTimeout(syncStatusTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -245,17 +269,26 @@ function App() {
   const handleRefresh = async () => {
     setRefreshing(true);
     setSyncError(false);
+    setSyncStatus('syncing');
     try {
       const response = await chrome.runtime.sendMessage({ type: 'REFRESH_FEEDS' });
       if (response?.error) {
         setSyncError(true);
+        setSyncStatus('error');
+      } else {
+        setSyncStatus('success');
       }
       await loadData();
     } catch (err) {
       console.error('Failed to refresh:', err);
       setSyncError(true);
+      setSyncStatus('error');
     } finally {
       setRefreshing(false);
+      if (syncStatusTimeoutRef.current) {
+        clearTimeout(syncStatusTimeoutRef.current);
+      }
+      syncStatusTimeoutRef.current = window.setTimeout(() => setSyncStatus('idle'), 2000);
     }
   };
 
@@ -424,6 +457,19 @@ function App() {
     return date.toLocaleDateString();
   };
 
+  const formatNextSync = (lastSyncTime: string | null, intervalMins: number): string => {
+    if (!lastSyncTime) return `in ${intervalMins}m`;
+    const lastSync = new Date(lastSyncTime);
+    const nextSync = new Date(lastSync.getTime() + intervalMins * 60000);
+    const now = new Date();
+    const diffMs = nextSync.getTime() - now.getTime();
+    if (diffMs <= 0) return 'soon';
+    const diffMins = Math.ceil(diffMs / 60000);
+    if (diffMins < 60) return `in ${diffMins}m`;
+    const diffHours = Math.floor(diffMins / 60);
+    return `in ${diffHours}h ${diffMins % 60}m`;
+  };
+
   const themeIcon = theme === 'light' ? '☀️' : theme === 'dark' ? '🌙' : '🖥️';
 
   if (loading) {
@@ -464,6 +510,15 @@ function App() {
       {!isAuthenticated && (
         <div className="auth-notice">
           <p>Sign in to sync your feeds</p>
+        </div>
+      )}
+
+      {(isOffline || syncError) && isAuthenticated && (
+        <div className="cache-banner">
+          <span className="cache-icon">{isOffline ? '📡' : '⚠️'}</span>
+          <span className="cache-text">
+            {isOffline ? 'Offline - viewing cached data' : 'Sync failed - viewing cached data'}
+          </span>
         </div>
       )}
 
@@ -672,11 +727,17 @@ function App() {
 
       <div className="actions">
         <button
-          className="btn btn-secondary"
+          className={`btn btn-secondary sync-btn ${syncStatus}`}
           onClick={() => void handleRefresh()}
           disabled={refreshing || !isAuthenticated}
+          title="Sync feeds (r)"
         >
-          {refreshing ? 'Syncing...' : 'Sync'}
+          <span className="sync-btn-icon">
+            {syncStatus === 'syncing' ? '↻' : syncStatus === 'success' ? '✓' : syncStatus === 'error' ? '!' : '↻'}
+          </span>
+          <span className="sync-btn-text">
+            {syncStatus === 'syncing' ? 'Syncing...' : syncStatus === 'success' ? 'Synced!' : syncStatus === 'error' ? 'Failed' : 'Sync Now'}
+          </span>
         </button>
         <button className="btn btn-primary" onClick={handleOpenApp}>
           Open App
@@ -685,11 +746,13 @@ function App() {
 
       {isAuthenticated && (
         <footer className="footer">
-          <span className="sync-status">Synced: {formatLastSync(lastSync)}</span>
+          <div className="sync-indicator">
+            <span className="sync-status">Synced {formatLastSync(lastSync)}</span>
+            <span className="sync-next">Next {formatNextSync(lastSync, pollIntervalMinutes)}</span>
+          </div>
           <button className="stats-btn" onClick={() => setShowStats(true)} title="View statistics">
             📊
           </button>
-          <span className="shortcuts-hint">j/k nav · o open · m read</span>
         </footer>
       )}
 

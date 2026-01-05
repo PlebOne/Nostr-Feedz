@@ -538,8 +538,27 @@ async function setupAlarm(): Promise<void> {
   });
 }
 
-let lastManualRefreshTime = 0;
 const MANUAL_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
+
+async function getLastManualRefreshTime(): Promise<number> {
+  const result = await chrome.storage.session.get('lastManualRefreshTime');
+  return (result['lastManualRefreshTime'] as number | undefined) ?? 0;
+}
+
+async function setLastManualRefreshTime(time: number): Promise<void> {
+  await chrome.storage.session.set({ lastManualRefreshTime: time });
+}
+
+async function isSyncOverdue(): Promise<boolean> {
+  const storage = await getStorageData();
+  const { settings } = storage;
+  const lastSyncTime = settings.lastSyncTime;
+  if (!lastSyncTime) return true;
+
+  const lastSync = new Date(lastSyncTime).getTime();
+  const pollInterval = (settings.pollIntervalMinutes || DEFAULT_POLL_INTERVAL) * 60 * 1000;
+  return Date.now() - lastSync > pollInterval;
+}
 
 async function handleMessage(
   message: { type: string; [key: string]: unknown },
@@ -549,13 +568,14 @@ async function handleMessage(
     case 'REFRESH_FEEDS': {
       const forceSync = message['forceSync'] as boolean | undefined;
       const now = Date.now();
+      const lastManualRefresh = await getLastManualRefreshTime();
 
-      if (forceSync !== false && (now - lastManualRefreshTime < MANUAL_REFRESH_COOLDOWN_MS)) {
+      if (forceSync !== false && (now - lastManualRefresh < MANUAL_REFRESH_COOLDOWN_MS)) {
         return { success: true, data: { newItemCount: 0, note: 'Cooldown active' } };
       }
 
       if (forceSync !== false) {
-        lastManualRefreshTime = now;
+        await setLastManualRefreshTime(now);
       }
 
       await tryRestoreAuthFromOpenTabs();
@@ -1149,5 +1169,7 @@ void (async () => {
   const storage = await getStorageData();
   const totalUnread = storage.feeds.reduce((sum, feed) => sum + feed.unreadCount, 0);
   updateBadge(totalUnread);
-  void refreshFeeds();
+  if (await isSyncOverdue()) {
+    void refreshFeeds();
+  }
 })();

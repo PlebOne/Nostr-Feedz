@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Nostr Feedz Extension",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Chrome extension for Nostr Feedz - detect and subscribe to RSS/Atom feeds",
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
