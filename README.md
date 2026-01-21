@@ -278,7 +278,7 @@ The application uses the following main models:
 
 ## Project Structure
 
-```
+```plaintext
 src/
 ├── app/                    # Next.js app router pages
 │   ├── api/               # API routes
