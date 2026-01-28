@@ -1516,10 +1516,21 @@ export function FeedReader() {
         )}
 
         {/* Footer */}
-        <div className="p-4 border-t border-theme-primary flex-shrink-0">
+        <div className="p-4 border-t border-theme-primary flex-shrink-0 space-y-2">
+          {user?.npub === 'npub13hyx3qsqk3r7ctjqrr49uskut4yqjsxt8uvu4rekr55p08wyhf0qq90nt7' && (
+            <button
+              onClick={() => router.push('/admin')}
+              className="w-full flex items-center gap-2 text-sm text-theme-secondary hover:text-theme-primary transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+              </svg>
+              Admin Dashboard
+            </button>
+          )}
           <button
             onClick={handleSignOut}
-            className="flex items-center gap-2 text-sm text-theme-secondary hover:text-theme-primary transition-colors"
+            className="w-full flex items-center gap-2 text-sm text-theme-secondary hover:text-theme-primary transition-colors"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
