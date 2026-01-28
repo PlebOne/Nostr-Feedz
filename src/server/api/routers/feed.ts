@@ -386,7 +386,12 @@ export const feedRouter = createTRPCRouter({
 
       // Filter by category if provided
       if (input?.categoryId) {
-        whereClause.categoryId = input.categoryId
+        // Handle "uncategorized" as a special case
+        if (input.categoryId === 'uncategorized') {
+          whereClause.categoryId = null
+        } else {
+          whereClause.categoryId = input.categoryId
+        }
       }
 
       const subscriptions = await ctx.db.subscription.findMany({
@@ -1663,7 +1668,31 @@ export const feedRouter = createTRPCRouter({
         orderBy: { sortOrder: 'asc' },
       })
 
-      return categories.map((cat: CategoryWithSubscriptions) => ({
+      // Get uncategorized subscriptions
+      const uncategorizedSubs = await ctx.db.subscription.findMany({
+        where: {
+          userPubkey: ctx.nostrPubkey,
+          categoryId: null,
+          deletedAt: null,
+        },
+        include: {
+          feed: {
+            include: {
+              items: {
+                where: {
+                  readItems: {
+                    none: {
+                      userPubkey: ctx.nostrPubkey,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      })
+
+      const result = categories.map((cat: CategoryWithSubscriptions) => ({
         id: cat.id,
         name: cat.name,
         color: cat.color,
@@ -1671,6 +1700,20 @@ export const feedRouter = createTRPCRouter({
         feedCount: cat.subscriptions.length,
         unreadCount: cat.subscriptions.reduce((sum: number, sub: CategoryWithSubscriptions['subscriptions'][number]) => sum + sub.feed.items.length, 0),
       }))
+
+      // Add uncategorized as a special category if there are any uncategorized subscriptions
+      if (uncategorizedSubs.length > 0) {
+        result.push({
+          id: 'uncategorized',
+          name: 'Uncategorized',
+          color: '#64748b', // slate gray
+          icon: '📦',
+          feedCount: uncategorizedSubs.length,
+          unreadCount: uncategorizedSubs.reduce((sum, sub) => sum + sub.feed.items.length, 0),
+        })
+      }
+
+      return result
     }),
 
   // ==================== USER PREFERENCES ====================

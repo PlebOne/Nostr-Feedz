@@ -103,6 +103,8 @@ export function FeedReader() {
   
   const handleOrganizationModeChange = (mode: OrganizationMode) => {
     updatePreferenceMutation.mutate({ organizationMode: mode })
+    // Switch to tags sidebar view when changing organization mode
+    setSidebarView('tags')
   }
   
   // Categories query
