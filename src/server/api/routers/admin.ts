@@ -1,0 +1,224 @@
+import { z } from "zod";
+import { createTRPCRouter, publicProcedure } from "@/server/api/trpc";
+import { db } from "@/server/db";
+
+const ADMIN_NPUB = 'npub13hyx3qsqk3r7ctjqrr49uskut4yqjsxt8uvu4rekr55p08wyhf0qq90nt7';
+
+export const adminRouter = createTRPCRouter({
+  getStats: publicProcedure
+    .input(z.object({
+      npub: z.string(),
+    }))
+    .query(async ({ input }) => {
+      if (input.npub !== ADMIN_NPUB) {
+        throw new Error('Unauthorized');
+      }
+
+      const now = new Date();
+      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+      // Total unique users (based on subscriptions)
+      const totalUsers = await db.subscription.findMany({
+        distinct: ['userPubkey'],
+        select: { userPubkey: true }
+      });
+
+      // Active users in last 30 days (users who created subscriptions or read items)
+      const activeUsers30d = await db.subscription.groupBy({
+        by: ['userPubkey'],
+        where: {
+          createdAt: {
+            gte: thirtyDaysAgo
+          }
+        }
+      });
+
+      // Active users in last 7 days
+      const activeUsers7d = await db.subscription.groupBy({
+        by: ['userPubkey'],
+        where: {
+          createdAt: {
+            gte: sevenDaysAgo
+          }
+        }
+      });
+
+      // Total feeds
+      const totalFeeds = await db.feed.count();
+
+      // Active feeds
+      const activeFeeds = await db.feed.count({
+        where: {
+          isActive: true
+        }
+      });
+
+      // Total feed items
+      const totalFeedItems = await db.feedItem.count();
+
+      // Total subscriptions
+      const totalSubscriptions = await db.subscription.count();
+
+      // Read items in last 30 days
+      const readItems30d = await db.readItem.count({
+        where: {
+          readAt: {
+            gte: thirtyDaysAgo
+          }
+        }
+      });
+
+      // Guide feeds
+      const totalGuideFeeds = await db.guideFeed.count();
+
+      // User subscriptions (paid users)
+      const paidSubscriptions = await db.userSubscription.count({
+        where: {
+          status: 'ACTIVE'
+        }
+      });
+
+      const trialSubscriptions = await db.userSubscription.count({
+        where: {
+          status: 'TRIAL'
+        }
+      });
+
+      return {
+        users: {
+          total: totalUsers.length,
+          active30d: activeUsers30d.length,
+          active7d: activeUsers7d.length,
+        },
+        feeds: {
+          total: totalFeeds,
+          active: activeFeeds,
+          guideFeeds: totalGuideFeeds,
+        },
+        items: {
+          total: totalFeedItems,
+          read30d: readItems30d,
+        },
+        subscriptions: {
+          total: totalSubscriptions,
+          paid: paidSubscriptions,
+          trial: trialSubscriptions,
+        },
+      };
+    }),
+
+  getUserGrowth: publicProcedure
+    .input(z.object({
+      npub: z.string(),
+      days: z.number().optional().default(30),
+    }))
+    .query(async ({ input }) => {
+      if (input.npub !== ADMIN_NPUB) {
+        throw new Error('Unauthorized');
+      }
+
+      const now = new Date();
+      const startDate = new Date(now.getTime() - input.days * 24 * 60 * 60 * 1000);
+
+      // Get all subscriptions grouped by day
+      const subscriptions = await db.subscription.findMany({
+        where: {
+          createdAt: {
+            gte: startDate
+          }
+        },
+        select: {
+          userPubkey: true,
+          createdAt: true,
+        },
+        orderBy: {
+          createdAt: 'asc'
+        }
+      });
+
+      // Group by date and count unique users per day
+      const usersByDay = new Map<string, Set<string>>();
+      
+      subscriptions.forEach(sub => {
+        const dateKey = sub.createdAt.toISOString().split('T')[0];
+        if (!usersByDay.has(dateKey!)) {
+          usersByDay.set(dateKey!, new Set());
+        }
+        usersByDay.get(dateKey!)!.add(sub.userPubkey);
+      });
+
+      // Convert to cumulative count
+      const allUsers = new Set<string>();
+      const growthData: { date: string; count: number }[] = [];
+
+      // Fill in all days even if no data
+      for (let i = input.days - 1; i >= 0; i--) {
+        const date = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+        const dateKey = date.toISOString().split('T')[0]!;
+        
+        const usersOnDay = usersByDay.get(dateKey);
+        if (usersOnDay) {
+          usersOnDay.forEach(user => allUsers.add(user));
+        }
+        
+        growthData.push({
+          date: dateKey,
+          count: allUsers.size,
+        });
+      }
+
+      return growthData;
+    }),
+
+  getActivityHistory: publicProcedure
+    .input(z.object({
+      npub: z.string(),
+      days: z.number().optional().default(30),
+    }))
+    .query(async ({ input }) => {
+      if (input.npub !== ADMIN_NPUB) {
+        throw new Error('Unauthorized');
+      }
+
+      const now = new Date();
+      const startDate = new Date(now.getTime() - input.days * 24 * 60 * 60 * 1000);
+
+      // Get read items per day
+      const readItems = await db.readItem.findMany({
+        where: {
+          readAt: {
+            gte: startDate
+          }
+        },
+        select: {
+          readAt: true,
+        },
+        orderBy: {
+          readAt: 'asc'
+        }
+      });
+
+      // Group by date
+      const itemsByDay = new Map<string, number>();
+      
+      readItems.forEach(item => {
+        const dateKey = item.readAt.toISOString().split('T')[0];
+        itemsByDay.set(dateKey!, (itemsByDay.get(dateKey!) || 0) + 1);
+      });
+
+      // Fill in all days
+      const activityData: { date: string; reads: number }[] = [];
+      for (let i = input.days - 1; i >= 0; i--) {
+        const date = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+        const dateKey = date.toISOString().split('T')[0]!;
+        
+        activityData.push({
+          date: dateKey,
+          reads: itemsByDay.get(dateKey) || 0,
+        });
+      }
+
+      return activityData;
+    }),
+});

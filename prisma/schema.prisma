@@ -62,6 +62,8 @@ model Subscription {
     tags       String[] @default([]) // User-defined tags/categories
     categoryId String?  // Optional: Link to a category
     createdAt  DateTime @default(now())
+    updatedAt  DateTime @updatedAt
+    deletedAt  DateTime? // Soft delete for sync tracking
     
     // Relations  
     feed     Feed      @relation(fields: [feedId], references: [id], onDelete: Cascade)
@@ -71,6 +73,7 @@ model Subscription {
     @@index([userPubkey])
     @@index([userPubkey, tags])
     @@index([userPubkey, categoryId])
+    @@index([userPubkey, deletedAt])
 }
 
 // User-defined categories for organizing feeds
@@ -109,12 +112,14 @@ model ReadItem {
     userPubkey String   // Nostr pubkey  
     itemId     String
     readAt     DateTime @default(now())
+    syncedAt   DateTime? // Last time synced to Nostr
     
     // Relations
     feedItem FeedItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
     
     @@unique([userPubkey, itemId])
     @@index([userPubkey])
+    @@index([userPubkey, syncedAt])
 }
 
 model Favorite {

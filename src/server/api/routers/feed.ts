@@ -222,22 +222,14 @@ const refreshAllUserFeedsInternal = async (db: any, userPubkey: string, force = 
 }
 
 export const feedRouter = createTRPCRouter({
-  // Update user's Nostr relays
+  // Update user's Nostr relays (deprecated - relays are managed client-side now)
   updateNostrRelays: protectedProcedure
     .input(z.object({
       relays: z.array(z.string()),
     }))
     .mutation(async ({ ctx, input }) => {
-      await ctx.db.userPreference.upsert({
-        where: { userPubkey: ctx.nostrPubkey },
-        create: {
-          userPubkey: ctx.nostrPubkey,
-          nostrRelays: input.relays,
-        },
-        update: {
-          nostrRelays: input.relays,
-        },
-      })
+      // This endpoint is kept for backward compatibility but no longer stores relays
+      // Relays are now managed client-side in localStorage
       return { success: true }
     }),
 
@@ -264,8 +256,8 @@ export const feedRouter = createTRPCRouter({
           const syncThreshold = new Date(Date.now() - SYNC_INTERVAL)
 
           if (!lastSync || lastSync < syncThreshold || input?.forceSync === true) {
-            const relays = getSyncRelaysFromServer(prefs?.nostrRelays)
-            const remoteResult = await fetchSubscriptionListFromServer(ctx.nostrPubkey, relays)
+            // Use default relays for sync
+            const remoteResult = await fetchSubscriptionListFromServer(ctx.nostrPubkey)
 
             if (remoteResult.success && remoteResult.data) {
               const remoteList = remoteResult.data
@@ -382,6 +374,7 @@ export const feedRouter = createTRPCRouter({
 
       const whereClause: Prisma.SubscriptionWhereInput = {
         userPubkey: ctx.nostrPubkey,
+        deletedAt: null, // Exclude soft-deleted subscriptions
       }
 
       // Filter by tags if provided
@@ -973,18 +966,22 @@ export const feedRouter = createTRPCRouter({
       }
     }),
 
-  // Unsubscribe from a feed
+  // Unsubscribe from a feed (soft delete for sync tracking)
   unsubscribeFeed: protectedProcedure
     .input(z.object({
       feedId: z.string(),
     }))
     .mutation(async ({ ctx, input }) => {
-      await ctx.db.subscription.delete({
+      // Soft delete by setting deletedAt timestamp
+      await ctx.db.subscription.update({
         where: {
           userPubkey_feedId: {
             userPubkey: ctx.nostrPubkey,
             feedId: input.feedId,
           },
+        },
+        data: {
+          deletedAt: new Date(),
         },
       })
 
@@ -1708,5 +1705,96 @@ export const feedRouter = createTRPCRouter({
       })
 
       return preference
+    }),
+
+  // ==================== SYNC OPERATIONS ====================
+
+  // Get all subscriptions including soft-deleted for sync
+  getSubscriptionsForSync: protectedProcedure
+    .query(async ({ ctx }) => {
+      const subscriptions = await ctx.db.subscription.findMany({
+        where: {
+          userPubkey: ctx.nostrPubkey,
+        },
+        include: {
+          feed: true,
+        },
+      })
+
+      return subscriptions.map(sub => ({
+        type: sub.feed.type,
+        url: sub.feed.url || sub.feed.npub || '',
+        tags: sub.tags,
+        deletedAt: sub.deletedAt,
+      }))
+    }),
+
+  // Hard delete old soft-deleted subscriptions (cleanup)
+  cleanupDeletedSubscriptions: protectedProcedure
+    .input(z.object({
+      olderThanDays: z.number().default(90),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const cutoffDate = new Date()
+      cutoffDate.setDate(cutoffDate.getDate() - input.olderThanDays)
+
+      const result = await ctx.db.subscription.deleteMany({
+        where: {
+          userPubkey: ctx.nostrPubkey,
+          deletedAt: {
+            not: null,
+            lt: cutoffDate,
+          },
+        },
+      })
+
+      return { deletedCount: result.count }
+    }),
+
+  // Mark read items as synced
+  markReadItemsSynced: protectedProcedure
+    .input(z.object({
+      itemIds: z.array(z.string()),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      await ctx.db.readItem.updateMany({
+        where: {
+          userPubkey: ctx.nostrPubkey,
+          itemId: {
+            in: input.itemIds,
+          },
+        },
+        data: {
+          syncedAt: new Date(),
+        },
+      })
+
+      return { success: true }
+    }),
+
+  // Get unsynced read items
+  getUnsyncedReadItems: protectedProcedure
+    .query(async ({ ctx }) => {
+      const readItems = await ctx.db.readItem.findMany({
+        where: {
+          userPubkey: ctx.nostrPubkey,
+          syncedAt: null,
+        },
+        include: {
+          feedItem: {
+            select: {
+              guid: true,
+            },
+          },
+        },
+      })
+
+      return readItems
+        .filter(item => item.feedItem.guid)
+        .map(item => ({
+          itemId: item.itemId,
+          guid: item.feedItem.guid!,
+          readAt: item.readAt,
+        }))
     }),
 })

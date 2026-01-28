@@ -3,12 +3,21 @@ import type { UnsignedEvent } from 'nostr-tools'
 
 // Kind 30404 for subscription list sync
 const SUBSCRIPTION_LIST_KIND = 30404
+// Kind 30405 for read status sync
+const READ_STATUS_KIND = 30405
 
 // Subscription list event structure
 export interface SubscriptionList {
   rss: string[] // RSS feed URLs
   nostr: string[] // Nostr npubs for long-form content
   tags?: Record<string, string[]> // Optional: tags per feed (feedUrl -> tags)
+  deleted?: string[] // Feeds that were explicitly removed (URLs or npubs)
+  lastUpdated?: number // Unix timestamp
+}
+
+// Read status sync using kind 30405
+export interface ReadStatusList {
+  itemGuids: string[] // FeedItem guids that have been read
   lastUpdated?: number // Unix timestamp
 }
 
@@ -24,7 +33,7 @@ const DEFAULT_SYNC_RELAYS = [
 // Helper to get relays from localStorage or use defaults
 export function getSyncRelays(): string[] {
   if (typeof window === 'undefined') return DEFAULT_SYNC_RELAYS
-
+  
   const savedRelays = localStorage.getItem('nostr_relays')
   if (savedRelays) {
     try {
@@ -71,7 +80,7 @@ export async function publishSubscriptionList(
 ): Promise<{ success: boolean; eventId?: string; error?: string }> {
   const pool = new SimplePool()
   const relays = getSyncRelays()
-
+  
   try {
     // Create the unsigned event
     const unsignedEvent: UnsignedEvent = {
@@ -90,19 +99,21 @@ export async function publishSubscriptionList(
 
     // Sign the event using NIP-07 or provided signer
     const signedEvent = await signEvent(unsignedEvent)
-
+    
     // Publish to all relays
     const publishPromises = pool.publish(relays, signedEvent)
-
+    
     // Wait for at least one relay to accept (use Promise.race as fallback)
     await Promise.race(publishPromises)
-
+    
+    console.log('Published subscription list to Nostr:', signedEvent.id)
+    
     return { success: true, eventId: signedEvent.id }
   } catch (error) {
     console.error('Failed to publish subscription list:', error)
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error'
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Unknown error' 
     }
   } finally {
     pool.close(relays)
@@ -117,27 +128,27 @@ export async function fetchSubscriptionList(
 ): Promise<{ success: boolean; data?: SubscriptionList; eventId?: string; createdAt?: number; error?: string }> {
   const pool = new SimplePool()
   const relays = getSyncRelays()
-
+  
   try {
     const pubkeyHex = getPubkeyHex(userPubkey)
-
+    
     // Fetch the subscription list event
     const event = await pool.get(relays, {
       kinds: [SUBSCRIPTION_LIST_KIND],
       authors: [pubkeyHex],
       '#d': ['nostr-feedz-subscriptions'],
     })
-
+    
     if (!event) {
-      return {
-        success: true,
+      return { 
+        success: true, 
         data: { rss: [], nostr: [] }, // Return empty list if none found
       }
     }
-
+    
     // Parse the content
     const content = JSON.parse(event.content) as SubscriptionList
-
+    
     return {
       success: true,
       data: content,
@@ -146,9 +157,9 @@ export async function fetchSubscriptionList(
     }
   } catch (error) {
     console.error('Failed to fetch subscription list:', error)
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error'
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Unknown error' 
     }
   } finally {
     pool.close(relays)
@@ -156,33 +167,36 @@ export async function fetchSubscriptionList(
 }
 
 /**
- * Server-side version of fetchSubscriptionList that takes relays as an argument
+ * Fetch the user's subscription list from Nostr relays (server-side version)
+ * Accepts relays as parameter for server-side use
  */
 export async function fetchSubscriptionListFromServer(
   userPubkey: string,
-  relays: string[]
+  relays?: string[]
 ): Promise<{ success: boolean; data?: SubscriptionList; eventId?: string; createdAt?: number; error?: string }> {
   const pool = new SimplePool()
-
+  const syncRelays = getSyncRelaysFromServer(relays)
+  
   try {
     const pubkeyHex = getPubkeyHex(userPubkey)
-
+    
     // Fetch the subscription list event
-    const event = await pool.get(relays, {
+    const event = await pool.get(syncRelays, {
       kinds: [SUBSCRIPTION_LIST_KIND],
       authors: [pubkeyHex],
       '#d': ['nostr-feedz-subscriptions'],
     })
-
+    
     if (!event) {
-      return {
-        success: true,
-        data: { rss: [], nostr: [] },
+      return { 
+        success: true, 
+        data: { rss: [], nostr: [] }, // Return empty list if none found
       }
     }
-
+    
+    // Parse the content
     const content = JSON.parse(event.content) as SubscriptionList
-
+    
     return {
       success: true,
       data: content,
@@ -190,31 +204,42 @@ export async function fetchSubscriptionListFromServer(
       createdAt: event.created_at,
     }
   } catch (error) {
-    console.error('Failed to fetch subscription list from server:', error)
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error'
+    console.error('Failed to fetch subscription list:', error)
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Unknown error' 
     }
   } finally {
-    pool.close(relays)
+    pool.close(syncRelays)
   }
 }
 
 /**
- * Build a subscription list from current feeds
+ * Build a subscription list from current feeds, including deleted feeds
  */
 export function buildSubscriptionListFromFeeds(
   feeds: Array<{
     type: 'RSS' | 'NOSTR' | 'NOSTR_VIDEO'
     url: string
     tags?: string[]
+    deletedAt?: Date | null
   }>
 ): SubscriptionList {
   const rss: string[] = []
   const nostr: string[] = []
+  const deleted: string[] = []
   const tags: Record<string, string[]> = {}
-
+  
   for (const feed of feeds) {
+    const identifier = feed.type === 'RSS' ? feed.url : 
+      (feed.url.match(/npub\w+/)?.[0] || feed.url)
+    
+    // Track deleted feeds
+    if (feed.deletedAt) {
+      deleted.push(identifier)
+      continue
+    }
+    
     if (feed.type === 'RSS') {
       rss.push(feed.url)
       if (feed.tags && feed.tags.length > 0) {
@@ -237,8 +262,8 @@ export function buildSubscriptionListFromFeeds(
       }
     }
   }
-
-  return { rss, nostr, tags }
+  
+  return { rss, nostr, tags, deleted: deleted.length > 0 ? deleted : undefined }
 }
 
 /**
@@ -277,37 +302,74 @@ export function normalizeNpub(value: string): string {
 
 /**
  * Merge remote subscription list with local feeds
- * Returns lists of feeds to add and remove
+ * Returns lists of feeds to add, remove, and local-only
  */
 export function mergeSubscriptionLists(
-  localFeeds: Array<{ type: 'RSS' | 'NOSTR' | 'NOSTR_VIDEO'; url: string; tags?: string[] }>,
+  localFeeds: Array<{ type: 'RSS' | 'NOSTR' | 'NOSTR_VIDEO'; url: string; tags?: string[]; deletedAt?: Date | null }>,
   remoteList: SubscriptionList
 ): {
   toAdd: Array<{ type: 'RSS' | 'NOSTR'; url: string; tags?: string[] }>
+  toRemove: Array<{ type: 'RSS' | 'NOSTR' | 'NOSTR_VIDEO'; url: string }>
   localOnly: Array<{ type: 'RSS' | 'NOSTR' | 'NOSTR_VIDEO'; url: string }>
 } {
   // Normalize RSS URLs for comparison
   const localRssUrls = new Set(
     localFeeds
-      .filter(f => f.type === 'RSS' && f.url)
+      .filter(f => f.type === 'RSS' && f.url && !f.deletedAt)
       .map(f => normalizeUrlForComparison(f.url))
   )
-
+  
   // For Nostr feeds, extract and normalize npubs
   const localNpubs = new Set(
     localFeeds
-      .filter(f => f.type === 'NOSTR' || f.type === 'NOSTR_VIDEO')
+      .filter(f => (f.type === 'NOSTR' || f.type === 'NOSTR_VIDEO') && !f.deletedAt)
       .filter(f => f.url) // Filter out empty URLs
       .map(f => normalizeNpub(f.url))
   )
-
+  
+  console.log('🔍 Sync merge - Local RSS URLs (normalized):', Array.from(localRssUrls))
+  console.log('🔍 Sync merge - Local Nostr npubs (normalized):', Array.from(localNpubs))
+  console.log('🔍 Sync merge - Remote RSS URLs:', remoteList.rss)
+  console.log('🔍 Sync merge - Remote Nostr npubs:', remoteList.nostr)
+  console.log('🔍 Sync merge - Remote deleted feeds:', remoteList.deleted)
+  
   const toAdd: Array<{ type: 'RSS' | 'NOSTR'; url: string; tags?: string[] }> = []
-
+  const toRemove: Array<{ type: 'RSS' | 'NOSTR' | 'NOSTR_VIDEO'; url: string }> = []
+  
+  // Build set of remotely deleted feeds
+  const remoteDeleted = new Set<string>()
+  if (remoteList.deleted) {
+    for (const deletedFeed of remoteList.deleted) {
+      // Try to normalize as both URL and npub
+      try {
+        remoteDeleted.add(normalizeUrlForComparison(deletedFeed))
+      } catch {
+        remoteDeleted.add(normalizeNpub(deletedFeed))
+      }
+    }
+  }
+  
+  // Check local feeds against remote deleted list
+  for (const localFeed of localFeeds) {
+    if (localFeed.deletedAt) continue // Skip already deleted
+    
+    const normalized = localFeed.type === 'RSS' 
+      ? normalizeUrlForComparison(localFeed.url)
+      : normalizeNpub(localFeed.url)
+    
+    if (remoteDeleted.has(normalized)) {
+      console.log(`🗑️ Feed was deleted remotely, marking for removal: ${localFeed.url}`)
+      toRemove.push(localFeed)
+    }
+  }
+  
   // Check RSS feeds
   for (const rssUrl of remoteList.rss) {
     const normalizedRemoteUrl = normalizeUrlForComparison(rssUrl)
     const exists = localRssUrls.has(normalizedRemoteUrl)
-
+    
+    console.log(`🔍 RSS check: "${rssUrl}" -> normalized: "${normalizedRemoteUrl}" -> exists: ${exists}`)
+    
     if (!exists) {
       toAdd.push({
         type: 'RSS',
@@ -316,12 +378,14 @@ export function mergeSubscriptionLists(
       })
     }
   }
-
+  
   // Check Nostr feeds
   for (const npub of remoteList.nostr) {
     const normalizedRemoteNpub = normalizeNpub(npub)
     const exists = localNpubs.has(normalizedRemoteNpub)
-
+    
+    console.log(`🔍 Nostr check: "${npub}" -> normalized: "${normalizedRemoteNpub}" -> exists: ${exists}`)
+    
     if (!exists) {
       toAdd.push({
         type: 'NOSTR',
@@ -330,22 +394,30 @@ export function mergeSubscriptionLists(
       })
     }
   }
-
-  // Find local-only feeds (not in remote)
+  
+  // Find local-only feeds (not in remote and not in deleted list)
   const remoteRssNormalized = new Set(remoteList.rss.map(u => normalizeUrlForComparison(u)))
   const remoteNpubsNormalized = new Set(remoteList.nostr.map(n => normalizeNpub(n)))
-
+  
   const localOnly = localFeeds.filter(f => {
-    if (!f.url) return true // Keep local feeds with no URL
-
-    if (f.type === 'RSS') {
-      return !remoteRssNormalized.has(normalizeUrlForComparison(f.url))
-    } else {
-      return !remoteNpubsNormalized.has(normalizeNpub(f.url))
-    }
+    if (!f.url || f.deletedAt) return false // Skip empty or deleted
+    
+    const normalized = f.type === 'RSS' 
+      ? normalizeUrlForComparison(f.url)
+      : normalizeNpub(f.url)
+    
+    const inRemote = f.type === 'RSS' 
+      ? remoteRssNormalized.has(normalized)
+      : remoteNpubsNormalized.has(normalized)
+    
+    const inDeleted = remoteDeleted.has(normalized)
+    
+    return !inRemote && !inDeleted
   })
-
-  return { toAdd, localOnly }
+  
+  console.log(`🔍 Sync result: ${toAdd.length} to add, ${toRemove.length} to remove, ${localOnly.length} local-only`)
+  
+  return { toAdd, toRemove, localOnly }
 }
 
 /**
@@ -363,5 +435,90 @@ export function getLastSyncTime(): number | null {
 export function setLastSyncTime(timestamp: number): void {
   if (typeof window !== 'undefined') {
     localStorage.setItem('nostr_feedz_last_sync', timestamp.toString())
+  }
+}
+
+/**
+ * Publish read status to Nostr relays using kind 30405
+ */
+export async function publishReadStatus(
+  readItemGuids: string[],
+  signEvent: (event: UnsignedEvent) => Promise<Event>
+): Promise<{ success: boolean; eventId?: string; error?: string }> {
+  const pool = new SimplePool()
+  const relays = getSyncRelays()
+  
+  try {
+    const unsignedEvent: UnsignedEvent = {
+      kind: READ_STATUS_KIND,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [
+        ['d', 'nostr-feedz-read-status'],
+        ['client', 'nostr-feedz'],
+      ],
+      content: JSON.stringify({
+        itemGuids: readItemGuids,
+        lastUpdated: Math.floor(Date.now() / 1000),
+      }),
+      pubkey: '',
+    }
+
+    const signedEvent = await signEvent(unsignedEvent)
+    const publishPromises = pool.publish(relays, signedEvent)
+    await Promise.race(publishPromises)
+    
+    console.log('Published read status to Nostr:', signedEvent.id)
+    
+    return { success: true, eventId: signedEvent.id }
+  } catch (error) {
+    console.error('Failed to publish read status:', error)
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Unknown error' 
+    }
+  } finally {
+    pool.close(relays)
+  }
+}
+
+/**
+ * Fetch read status from Nostr relays
+ */
+export async function fetchReadStatus(
+  userPubkey: string
+): Promise<{ success: boolean; data?: ReadStatusList; error?: string }> {
+  const pool = new SimplePool()
+  const relays = getSyncRelays()
+  
+  try {
+    const pubkeyHex = getPubkeyHex(userPubkey)
+    
+    const event = await pool.get(relays, {
+      kinds: [READ_STATUS_KIND],
+      authors: [pubkeyHex],
+      '#d': ['nostr-feedz-read-status'],
+    })
+    
+    if (!event) {
+      return { 
+        success: true, 
+        data: { itemGuids: [] },
+      }
+    }
+    
+    const content = JSON.parse(event.content) as ReadStatusList
+    
+    return {
+      success: true,
+      data: content,
+    }
+  } catch (error) {
+    console.error('Failed to fetch read status:', error)
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Unknown error' 
+    }
+  } finally {
+    pool.close(relays)
   }
 }

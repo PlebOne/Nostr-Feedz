@@ -4,17 +4,26 @@
 
 Nostr Feedz uses **Nostr events** to sync RSS and Nostr long-form content subscriptions across devices. This enables users to maintain a single subscription list that works on mobile, desktop, and web - all tied to their Nostr identity.
 
+**New in v2:** The sync system now tracks **deleted subscriptions** and **read status** across devices for a seamless experience.
+
 ## How It Works
 
-### Event Type: Kind 30404
+### Event Types
 
+#### Kind 30404 - Subscription List Sync
 Subscription lists are stored as **replaceable events** using kind `30404`. This is in the 30000-39999 range, which means:
 
 - Events are replaceable (newer versions overwrite older ones)
 - The `d` tag identifies the specific list
 - Only the most recent event per `pubkey` + `d` tag combination is kept
 
-### Event Structure
+#### Kind 30405 - Read Status Sync (New)
+Read status for feed items is synced using kind `30405`:
+- Tracks which items have been marked as read
+- Syncs across all devices
+- Uses item GUIDs for identification
+
+### Event Structure - Subscription List
 
 ```json
 {
@@ -25,7 +34,24 @@ Subscription lists are stored as **replaceable events** using kind `30404`. This
     ["d", "nostr-feedz-subscriptions"],
     ["client", "nostr-feedz"]
   ],
-  "content": "{\"rss\":[...],\"nostr\":[...],\"tags\":{...},\"lastUpdated\":1732645747}",
+  "content": "{\"rss\":[...],\"nostr\":[...],\"deleted\":[...],\"tags\":{...},\"lastUpdated\":1732645747}",
+  "id": "<event id>",
+  "sig": "<signature>"
+}
+```
+
+### Event Structure - Read Status
+
+```json
+{
+  "kind": 30405,
+  "pubkey": "<user's hex pubkey>",
+  "created_at": 1732645747,
+  "tags": [
+    ["d", "nostr-feedz-read-status"],
+    ["client", "nostr-feedz"]
+  ],
+  "content": "{\"itemGuids\":[...],\"lastUpdated\":1732645747}",
   "id": "<event id>",
   "sig": "<signature>"
 }
@@ -33,7 +59,7 @@ Subscription lists are stored as **replaceable events** using kind `30404`. This
 
 ### Content Schema
 
-The `content` field contains a JSON object:
+The `content` field for **kind 30404** (subscriptions) contains:
 
 ```typescript
 interface SubscriptionList {
@@ -43,9 +69,24 @@ interface SubscriptionList {
   // Nostr npubs for long-form content authors
   nostr: string[]
   
+  // NEW: Explicitly deleted feeds (URLs or npubs)
+  deleted?: string[]
+  
   // Optional: tags/categories per feed
   // Key is the feed URL or npub
   tags?: Record<string, string[]>
+  
+  // Unix timestamp of last update
+  lastUpdated?: number
+}
+```
+
+The `content` field for **kind 30405** (read status) contains:
+
+```typescript
+interface ReadStatusList {
+  // GUIDs of feed items that have been read
+  itemGuids: string[]
   
   // Unix timestamp of last update
   lastUpdated?: number
