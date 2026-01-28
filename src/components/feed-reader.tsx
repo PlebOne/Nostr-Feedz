@@ -14,7 +14,10 @@ import {
   fetchSubscriptionList, 
   mergeSubscriptionLists,
   getLastSyncTime,
+  publishSubscriptionList,
+  buildSubscriptionListFromFeeds,
 } from '@/lib/nostr-sync'
+import type { UnsignedEvent, Event } from 'nostr-tools'
 import type { inferRouterOutputs } from '@trpc/server'
 import type { AppRouter } from '@/server/api/root'
 
@@ -325,6 +328,8 @@ export function FeedReader() {
       invalidateFeedData()
       setShowAddFeed(false)
       setFeedError('')
+      // Auto-export after adding a feed
+      setTimeout(() => autoExportToNostr(), 500)
     },
     onError: (error) => {
       setFeedError(error.message)
@@ -336,6 +341,8 @@ export function FeedReader() {
       invalidateFeedData()
       // If the deleted feed was selected, switch to "All Items"
       setSelectedFeed('all')
+      // Auto-export after removing a feed
+      setTimeout(() => autoExportToNostr(), 500)
     },
   })
   
@@ -374,6 +381,8 @@ export function FeedReader() {
       setEditingFeedId(null)
       setEditTags([])
       setEditTagInput('')
+      // Auto-export after updating tags
+      setTimeout(() => autoExportToNostr(), 500)
     },
   })
   
@@ -382,6 +391,15 @@ export function FeedReader() {
       invalidateFeedData()
       void utils.feed.getCategoriesWithUnread.invalidate()
       setShowCategoryPicker(null)
+      // Auto-export after updating category
+      setTimeout(() => autoExportToNostr(), 500)
+    },
+  })
+
+  const createCategoryMutation = api.feed.createCategory.useMutation({
+    onSuccess: () => {
+      void utils.feed.getCategories.invalidate()
+      void utils.feed.getCategoriesWithUnread.invalidate()
     },
   })
   
@@ -743,15 +761,83 @@ export function FeedReader() {
     }
   }
 
+  // Auto-export subscriptions to Nostr after changes
+  const autoExportToNostr = useCallback(async () => {
+    // Only auto-export if user has Nostr extension and is logged in
+    if (!window.nostr || !user?.npub) {
+      return
+    }
+
+    try {
+      console.log('🔄 Auto-exporting subscriptions to Nostr...')
+      
+      // Fetch all subscriptions including deleted ones for proper sync
+      const allSubscriptions = await utils.feed.getAllSubscriptionsForSync.fetch()
+      
+      const subscriptionList = buildSubscriptionListFromFeeds(allSubscriptions)
+      
+      const signEvent = async (event: UnsignedEvent): Promise<Event> => {
+        const pubkey = await window.nostr!.getPublicKey()
+        const signedEvent = await window.nostr!.signEvent({ ...event, pubkey })
+        if (!signedEvent) throw new Error('Failed to sign event')
+        return signedEvent as Event
+      }
+
+      const result = await publishSubscriptionList(subscriptionList, signEvent)
+      
+      if (result.success) {
+        console.log('✅ Auto-export successful:', result.eventId)
+      } else {
+        console.warn('⚠️ Auto-export failed:', result.error)
+      }
+    } catch (error) {
+      console.error('❌ Auto-export error:', error)
+      // Silently fail - don't interrupt user experience
+    }
+  }, [user?.npub, utils.feed])
+
   // Handle importing feeds from Nostr sync
-  const handleImportFeeds = async (feedsToImport: Array<{ type: 'RSS' | 'NOSTR'; url: string; tags?: string[] }>) => {
+  const handleImportFeeds = async (feedsToImport: Array<{ type: 'RSS' | 'NOSTR'; url: string; tags?: string[]; category?: { name: string; color?: string; icon?: string } }>) => {
+    // First, create a map of category names to IDs for existing categories
+    const categoryMap = new Map<string, string>()
+    for (const cat of categories) {
+      categoryMap.set(cat.name, cat.id)
+    }
+
     for (const feed of feedsToImport) {
       try {
+        let categoryId: string | undefined
+
+        // If feed has a category, ensure it exists and get its ID
+        if (feed.category) {
+          const existingCategoryId = categoryMap.get(feed.category.name)
+          
+          if (existingCategoryId) {
+            // Category already exists
+            categoryId = existingCategoryId
+          } else {
+            // Create new category
+            try {
+              const newCategory = await createCategoryMutation.mutateAsync({
+                name: feed.category.name,
+                color: feed.category.color,
+                icon: feed.category.icon,
+              })
+              categoryId = newCategory.id
+              categoryMap.set(feed.category.name, newCategory.id)
+            } catch (error) {
+              console.error(`Failed to create category: ${feed.category.name}`, error)
+              // Continue without category if creation fails
+            }
+          }
+        }
+
         if (feed.type === 'RSS') {
           await subscribeFeedMutation.mutateAsync({
             type: 'RSS',
             url: feed.url,
             tags: feed.tags,
+            categoryId,
           })
         } else {
           // For Nostr feeds, the url field contains the npub
@@ -759,6 +845,7 @@ export function FeedReader() {
             type: 'NOSTR',
             npub: feed.url,
             tags: feed.tags,
+            categoryId,
           })
         }
       } catch (error) {
@@ -1908,7 +1995,8 @@ export function FeedReader() {
         feeds={feeds.map((f: Feed) => ({
           type: f.type,
           url: f.url || f.npub || '',
-          tags: f.tags
+          tags: f.tags,
+          category: f.category
         }))}
         userPubkey={user?.npub || user?.pubkey}
         onImportFeeds={handleImportFeeds}

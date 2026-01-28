@@ -33,7 +33,7 @@ export interface SyncState {
   lastSync: number | null
   error?: string
   pendingImport?: {
-    toAdd: Array<{ type: 'RSS' | 'NOSTR'; url: string; tags?: string[] }>
+    toAdd: Array<{ type: 'RSS' | 'NOSTR'; url: string; tags?: string[]; category?: { name: string; color?: string; icon?: string } }>
     localOnly: Array<{ type: 'RSS' | 'NOSTR' | 'NOSTR_VIDEO'; url: string }>
   }
 }
@@ -96,9 +96,9 @@ interface SettingsDialogProps {
   onChangeMarkReadBehavior: (behavior: MarkReadBehavior) => void
   organizationMode: OrganizationMode
   onChangeOrganizationMode: (mode: OrganizationMode) => void
-  feeds?: Array<{ type: 'RSS' | 'NOSTR' | 'NOSTR_VIDEO'; url: string; tags?: string[] }>
+  feeds?: Array<{ type: 'RSS' | 'NOSTR' | 'NOSTR_VIDEO'; url: string; tags?: string[]; category?: { name: string; color?: string | null; icon?: string | null } | null }>
   userPubkey?: string
-  onImportFeeds?: (feeds: Array<{ type: 'RSS' | 'NOSTR'; url: string; tags?: string[] }>) => Promise<void>
+  onImportFeeds?: (feeds: Array<{ type: 'RSS' | 'NOSTR'; url: string; tags?: string[]; category?: { name: string; color?: string; icon?: string } }>) => Promise<void>
 }
 
 // Default category colors/icons

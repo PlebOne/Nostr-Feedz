@@ -11,6 +11,7 @@ export interface SubscriptionList {
   rss: string[] // RSS feed URLs
   nostr: string[] // Nostr npubs for long-form content
   tags?: Record<string, string[]> // Optional: tags per feed (feedUrl -> tags)
+  categories?: Record<string, { name: string; color?: string; icon?: string }> // Optional: category info per feed (feedUrl -> category)
   deleted?: string[] // Feeds that were explicitly removed (URLs or npubs)
   lastUpdated?: number // Unix timestamp
 }
@@ -222,6 +223,7 @@ export function buildSubscriptionListFromFeeds(
     type: 'RSS' | 'NOSTR' | 'NOSTR_VIDEO'
     url: string
     tags?: string[]
+    category?: { name: string; color?: string | null; icon?: string | null } | null
     deletedAt?: Date | null
   }>
 ): SubscriptionList {
@@ -229,6 +231,7 @@ export function buildSubscriptionListFromFeeds(
   const nostr: string[] = []
   const deleted: string[] = []
   const tags: Record<string, string[]> = {}
+  const categories: Record<string, { name: string; color?: string; icon?: string }> = {}
   
   for (const feed of feeds) {
     const identifier = feed.type === 'RSS' ? feed.url : 
@@ -245,6 +248,13 @@ export function buildSubscriptionListFromFeeds(
       if (feed.tags && feed.tags.length > 0) {
         tags[feed.url] = feed.tags
       }
+      if (feed.category) {
+        categories[feed.url] = {
+          name: feed.category.name,
+          color: feed.category.color || undefined,
+          icon: feed.category.icon || undefined,
+        }
+      }
     } else if (feed.type === 'NOSTR' || feed.type === 'NOSTR_VIDEO') {
       // Extract npub from URL if it's a profile URL
       const npubMatch = feed.url.match(/npub\w+/)
@@ -253,17 +263,37 @@ export function buildSubscriptionListFromFeeds(
         if (feed.tags && feed.tags.length > 0) {
           tags[npubMatch[0]] = feed.tags
         }
+        if (feed.category) {
+          categories[npubMatch[0]] = {
+            name: feed.category.name,
+            color: feed.category.color || undefined,
+            icon: feed.category.icon || undefined,
+          }
+        }
       } else {
         // Store the URL as-is if it's not an npub-based URL
         nostr.push(feed.url)
         if (feed.tags && feed.tags.length > 0) {
           tags[feed.url] = feed.tags
         }
+        if (feed.category) {
+          categories[feed.url] = {
+            name: feed.category.name,
+            color: feed.category.color || undefined,
+            icon: feed.category.icon || undefined,
+          }
+        }
       }
     }
   }
   
-  return { rss, nostr, tags, deleted: deleted.length > 0 ? deleted : undefined }
+  return { 
+    rss, 
+    nostr, 
+    tags: Object.keys(tags).length > 0 ? tags : undefined,
+    categories: Object.keys(categories).length > 0 ? categories : undefined,
+    deleted: deleted.length > 0 ? deleted : undefined 
+  }
 }
 
 /**
@@ -308,7 +338,7 @@ export function mergeSubscriptionLists(
   localFeeds: Array<{ type: 'RSS' | 'NOSTR' | 'NOSTR_VIDEO'; url: string; tags?: string[]; deletedAt?: Date | null }>,
   remoteList: SubscriptionList
 ): {
-  toAdd: Array<{ type: 'RSS' | 'NOSTR'; url: string; tags?: string[] }>
+  toAdd: Array<{ type: 'RSS' | 'NOSTR'; url: string; tags?: string[]; category?: { name: string; color?: string; icon?: string } }>
   toRemove: Array<{ type: 'RSS' | 'NOSTR' | 'NOSTR_VIDEO'; url: string }>
   localOnly: Array<{ type: 'RSS' | 'NOSTR' | 'NOSTR_VIDEO'; url: string }>
 } {
@@ -333,7 +363,7 @@ export function mergeSubscriptionLists(
   console.log('🔍 Sync merge - Remote Nostr npubs:', remoteList.nostr)
   console.log('🔍 Sync merge - Remote deleted feeds:', remoteList.deleted)
   
-  const toAdd: Array<{ type: 'RSS' | 'NOSTR'; url: string; tags?: string[] }> = []
+  const toAdd: Array<{ type: 'RSS' | 'NOSTR'; url: string; tags?: string[]; category?: { name: string; color?: string; icon?: string } }> = []
   const toRemove: Array<{ type: 'RSS' | 'NOSTR' | 'NOSTR_VIDEO'; url: string }> = []
   
   // Build set of remotely deleted feeds
@@ -375,6 +405,7 @@ export function mergeSubscriptionLists(
         type: 'RSS',
         url: rssUrl,
         tags: remoteList.tags?.[rssUrl],
+        category: remoteList.categories?.[rssUrl],
       })
     }
   }
@@ -391,6 +422,7 @@ export function mergeSubscriptionLists(
         type: 'NOSTR',
         url: npub,
         tags: remoteList.tags?.[npub],
+        category: remoteList.categories?.[npub],
       })
     }
   }

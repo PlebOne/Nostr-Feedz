@@ -281,23 +281,65 @@ export const feedRouter = createTRPCRouter({
               )
 
               // Identify new feeds from remote
-              const feedsToAdd: Array<{ type: 'RSS' | 'NOSTR'; url: string; tags: string[] }> = []
+              const feedsToAdd: Array<{ type: 'RSS' | 'NOSTR'; url: string; tags: string[]; category?: { name: string; color?: string; icon?: string } }> = []
 
               for (const rssUrl of remoteList.rss) {
                 if (!localRssUrls.has(normalizeUrlForComparison(rssUrl))) {
-                  feedsToAdd.push({ type: 'RSS', url: rssUrl, tags: remoteList.tags?.[rssUrl] || [] })
+                  feedsToAdd.push({ 
+                    type: 'RSS', 
+                    url: rssUrl, 
+                    tags: remoteList.tags?.[rssUrl] || [],
+                    category: remoteList.categories?.[rssUrl]
+                  })
                 }
               }
 
               for (const npub of remoteList.nostr) {
                 if (!localNpubs.has(normalizeNpub(npub))) {
-                  feedsToAdd.push({ type: 'NOSTR', url: npub, tags: remoteList.tags?.[npub] || [] })
+                  feedsToAdd.push({ 
+                    type: 'NOSTR', 
+                    url: npub, 
+                    tags: remoteList.tags?.[npub] || [],
+                    category: remoteList.categories?.[npub]
+                  })
                 }
               }
 
               if (feedsToAdd.length > 0) {
                 for (const feed of feedsToAdd) {
                   try {
+                    // Handle category if present
+                    let categoryId: string | undefined
+                    if (feed.category) {
+                      // Try to find existing category by name
+                      let category = await ctx.db.category.findFirst({
+                        where: {
+                          userPubkey: ctx.nostrPubkey,
+                          name: feed.category.name
+                        }
+                      })
+
+                      // Create category if it doesn't exist
+                      if (!category) {
+                        const maxSortOrder = await ctx.db.category.aggregate({
+                          where: { userPubkey: ctx.nostrPubkey },
+                          _max: { sortOrder: true }
+                        })
+
+                        category = await ctx.db.category.create({
+                          data: {
+                            userPubkey: ctx.nostrPubkey,
+                            name: feed.category.name,
+                            color: feed.category.color,
+                            icon: feed.category.icon,
+                            sortOrder: (maxSortOrder._max.sortOrder ?? -1) + 1
+                          }
+                        })
+                      }
+
+                      categoryId = category.id
+                    }
+
                     let feedUrl = feed.url
                     let feedRecord = await ctx.db.feed.findFirst({
                       where: feed.type === 'RSS'
@@ -341,9 +383,11 @@ export const feedRouter = createTRPCRouter({
                           userPubkey: ctx.nostrPubkey,
                           feedId: feedRecord.id,
                           tags: feed.tags,
+                          categoryId,
                         },
                         update: {
                           tags: feed.tags,
+                          categoryId,
                         }
                       })
                     }
@@ -434,6 +478,32 @@ export const feedRouter = createTRPCRouter({
           color: sub.category.color,
           icon: sub.category.icon,
         } : null,
+      }))
+    }),
+
+  // Get all subscriptions for sync (including deleted)
+  getAllSubscriptionsForSync: protectedProcedure
+    .query(async ({ ctx }) => {
+      const subscriptions = await ctx.db.subscription.findMany({
+        where: { 
+          userPubkey: ctx.nostrPubkey,
+        },
+        include: {
+          feed: true,
+          category: true,
+        },
+      })
+
+      return subscriptions.map(sub => ({
+        type: sub.feed.type,
+        url: sub.feed.url || sub.feed.npub || '',
+        tags: sub.tags,
+        category: sub.category ? {
+          name: sub.category.name,
+          color: sub.category.color,
+          icon: sub.category.icon,
+        } : null,
+        deletedAt: sub.deletedAt,
       }))
     }),
 

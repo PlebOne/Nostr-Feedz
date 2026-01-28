@@ -76,6 +76,10 @@ interface SubscriptionList {
   // Key is the feed URL or npub
   tags?: Record<string, string[]>
   
+  // Optional: category info per feed (NEW)
+  // Key is the feed URL or npub
+  categories?: Record<string, { name: string; color?: string; icon?: string }>
+  
   // Unix timestamp of last update
   lastUpdated?: number
 }
@@ -109,6 +113,18 @@ interface ReadStatusList {
     "https://example.com/feed.xml": ["tech", "news"],
     "npub1cj8znuztfqkvq89pl8hceph0svvvqk0qay6nydgk9uyq7fhpfsgsqwrz4u": ["bitcoin", "nostr"]
   },
+  "categories": {
+    "https://example.com/feed.xml": {
+      "name": "Technology",
+      "color": "#3b82f6",
+      "icon": "💻"
+    },
+    "npub1v5ufyh4lkeslgxxcclg8f0hzazhaw7rsrhvfquxzm2fk64c72hps45n0v5": {
+      "name": "Bitcoin",
+      "color": "#f59e0b",
+      "icon": "₿"
+    }
+  },
   "lastUpdated": 1732645747
 }
 ```
@@ -132,6 +148,7 @@ interface SubscriptionList {
   rss: string[]
   nostr: string[]
   tags?: Record<string, string[]>
+  categories?: Record<string, { name: string; color?: string; icon?: string }>
   lastUpdated?: number
 }
 
@@ -216,6 +233,7 @@ interface Feed {
   type: 'RSS' | 'NOSTR'
   url: string
   tags?: string[]
+  category?: { name: string; color?: string; icon?: string }
 }
 
 function mergeSubscriptions(
@@ -249,6 +267,7 @@ function mergeSubscriptions(
         type: 'RSS',
         url: rssUrl,
         tags: remoteList.tags?.[rssUrl],
+        category: remoteList.categories?.[rssUrl],
       })
     }
   }
@@ -260,6 +279,7 @@ function mergeSubscriptions(
         type: 'NOSTR',
         url: npub,
         tags: remoteList.tags?.[npub],
+        category: remoteList.categories?.[npub],
       })
     }
   }
@@ -333,12 +353,16 @@ function buildSubscriptionList(feeds: Feed[]): SubscriptionList {
   const rss: string[] = []
   const nostr: string[] = []
   const tags: Record<string, string[]> = {}
+  const categories: Record<string, { name: string; color?: string; icon?: string }> = {}
   
   for (const feed of feeds) {
     if (feed.type === 'RSS') {
       rss.push(feed.url)
       if (feed.tags?.length) {
         tags[feed.url] = feed.tags
+      }
+      if (feed.category) {
+        categories[feed.url] = feed.category
       }
     } else {
       const npubMatch = feed.url.match(/npub\w+/)
@@ -347,10 +371,13 @@ function buildSubscriptionList(feeds: Feed[]): SubscriptionList {
       if (feed.tags?.length) {
         tags[npub] = feed.tags
       }
+      if (feed.category) {
+        categories[npub] = feed.category
+      }
     }
   }
   
-  return { rss, nostr, tags }
+  return { rss, nostr, tags, categories }
 }
 ```
 
@@ -492,6 +519,7 @@ If you need additional fields, add them to the content JSON. Existing fields sho
   "rss": [...],
   "nostr": [...],
   "tags": {...},
+  "categories": {...},
   "lastUpdated": 1732645747,
   "yourAppField": "custom data"
 }
